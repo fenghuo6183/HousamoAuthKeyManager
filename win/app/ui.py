@@ -2,7 +2,9 @@
 """Tkinter desktop client for the Housamo AuthKey manager."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -25,6 +27,8 @@ class App:
         self.devices = []
         self.vault = None
         self._busy = False
+        self.save_dir = ""
+        self._load_settings()
 
         root.title(APP_TITLE)
         root.geometry("980x720")
@@ -72,6 +76,14 @@ class App:
         self.btn_import.pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="打开游戏", command=self.launch_game).pack(side="left", padx=(10, 0))
 
+        save_row = ttk.Frame(self.root, padding=(12, 0, 12, 8))
+        save_row.pack(fill="x")
+        ttk.Label(save_row, text="保存文件夹：").pack(side="left")
+        self.save_dir_var = tk.StringVar(value=self.save_dir or "未选择（点右侧「选择文件夹」）")
+        ttk.Entry(save_row, textvariable=self.save_dir_var, state="readonly", width=64).pack(side="left", fill="x", expand=True)
+        ttk.Button(save_row, text="选择文件夹", command=self.choose_save_dir).pack(side="left", padx=(6, 0))
+        ttk.Button(save_row, text="打开", command=self.open_save_dir).pack(side="left", padx=(6, 0))
+
         ttk.Separator(self.root).pack(fill="x", padx=12, pady=(2, 6))
 
         head = ttk.Frame(self.root, padding=(12, 0, 12, 2))
@@ -99,6 +111,7 @@ class App:
         row.pack(fill="x")
         for text, cmd in (("重命名", self.rename_entry), ("编辑备注", self.edit_note),
                           ("复制 Key", self.copy_key), ("显示 Key", self.show_key),
+                          ("导出到文件夹", self.export_selected_to_dir),
                           ("导出 .hak", self.export_hak), ("导入 .hak", self.import_hak),
                           ("删除", self.delete_entry)):
             ttk.Button(row, text=text, command=cmd).pack(side="left", padx=(0, 6))
@@ -129,6 +142,67 @@ class App:
         if self.adb:
             self.refresh_devices()
 
+    # -- settings / folder export --------------------------------------
+    def _settings_path(self):
+        base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        folder = os.path.join(base, "HousamoAuthKeyManager")
+        os.makedirs(folder, exist_ok=True)
+        return os.path.join(folder, "settings.json")
+
+    def _load_settings(self):
+        try:
+            with open(self._settings_path(), "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.save_dir = data.get("save_dir", "") or ""
+        except Exception:
+            self.save_dir = ""
+
+    def _save_settings(self):
+        try:
+            with open(self._settings_path(), "w", encoding="utf-8") as fh:
+                json.dump({"save_dir": self.save_dir}, fh, ensure_ascii=False, indent=1)
+        except Exception as exc:
+            self.log("设置", "保存设置失败：%s" % exc)
+
+    def choose_save_dir(self):
+        path = filedialog.askdirectory(parent=self.root, title="选择 key 保存到的文件夹")
+        if not path:
+            return
+        self.save_dir = path
+        self._save_settings()
+        self.save_dir_var.set(path)
+        self.log("设置", "保存文件夹：%s" % path)
+
+    def open_save_dir(self):
+        if not self.save_dir or not os.path.isdir(self.save_dir):
+            messagebox.showwarning(APP_TITLE, "请先选择一个存在的文件夹。")
+            return
+        try:
+            os.startfile(self.save_dir)   # noqa: S606 - Windows only
+        except Exception as exc:
+            self.log("设置", "打开文件夹失败：%s" % exc)
+
+    def _safe_name(self, name):
+        text = re.sub(r'[\\/:*?"<>|\r\n\t]', "_", name or "").strip()
+        if not text:
+            text = "账号"
+        return text[:40]
+
+    def export_to_dir(self, name, key):
+        """Write <保存文件夹>/<名字>/AuthKey.txt; returns path or None."""
+        if not self.save_dir:
+            return None
+        folder = os.path.join(self.save_dir, self._safe_name(name))
+        try:
+            os.makedirs(folder, exist_ok=True)
+            target = os.path.join(folder, "AuthKey.txt")
+            with open(target, "wb") as fh:
+                fh.write(bytes(key))
+            return target
+        except Exception as exc:
+            self.log("导出", "写入失败：%s" % exc)
+            return None
+
     # -- logging -------------------------------------------------------
     def log(self, tag, message):
         if threading.current_thread() is not threading.main_thread():
@@ -157,6 +231,8 @@ class App:
 
     def _finish(self, result, error, on_done):
         self._busy = False
+        self.save_dir = ""
+        self._load_settings()
         self._set_buttons("normal")
         if error is not None:
             self.log("失败", str(error))
@@ -279,6 +355,11 @@ class App:
             self.refresh_vault()
             self.vault_tree.selection_set(entry["id"])
             self.log("完成", "已保存账号，指纹 %s" % entry.get("fingerprint"))
+            out = self.export_to_dir(entry.get("name"), key)
+            if out:
+                self.log("导出", "已写出 %s" % out)
+            elif not self.save_dir:
+                self.log("导出", "还没有选择保存文件夹，可在上方「保存文件夹」里选一个。")
 
         self._bg(worker, done)
 
@@ -361,6 +442,24 @@ class App:
         box.configure(state="disabled")
         box.pack(fill="both", expand=True, padx=10, pady=10)
         ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+
+    def export_selected_to_dir(self):
+        entry = self.selected_entry()
+        if entry is None:
+            messagebox.showwarning(APP_TITLE, "请先在账号库里选中一个账号。")
+            return
+        if not self.save_dir:
+            if not messagebox.askyesno(APP_TITLE, "还没有选择保存文件夹，现在选一个吗？"):
+                return
+            self.choose_save_dir()
+            if not self.save_dir:
+                return
+        out = self.export_to_dir(entry.get("name"), self.vault.key_of(entry))
+        if out:
+            self.log("导出", "已写出 %s" % out)
+            messagebox.showinfo(APP_TITLE, "已导出到：\n%s" % out)
+        else:
+            messagebox.showerror(APP_TITLE, "导出失败，详见运行日志。")
 
     def export_hak(self):
         entry = self.selected_entry()
