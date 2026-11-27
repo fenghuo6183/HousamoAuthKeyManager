@@ -151,6 +151,7 @@ public class MainActivity extends Activity {
         if (getIntent() != null && getIntent().hasExtra("page")) {
             startPage = getIntent().getIntExtra("page", startPage);
         }
+        android.util.Log.i("HSK", "startPage=" + startPage + " hasExtra=" + (getIntent() != null && getIntent().hasExtra("page")));
         if (startPage >= 0 && startPage <= 3) showPage(startPage);
         pool.execute(new Runnable() {
             public void run() {
