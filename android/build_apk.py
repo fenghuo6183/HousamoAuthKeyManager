@@ -18,8 +18,10 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
-VERSION_CODE = "2"
-VERSION_NAME = "1.0.1"
+VERSION_CODE = "3"
+VERSION_NAME = "1.0.2"
+MIN_SDK = "24"
+LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar")]
 
 ENV = dict(os.environ)
 ENV["JAVA_HOME"] = JDK
@@ -60,7 +62,7 @@ def main():
     base = os.path.join(BUILD, "base.apk")
     run([aapt2, "link", "-o", base, "-I", ANDROID_JAR,
          "--manifest", os.path.join(HERE, "AndroidManifest.xml"),
-         "--min-sdk-version", "21", "--target-sdk-version", "34",
+         "--min-sdk-version", MIN_SDK, "--target-sdk-version", "34",
          "--version-code", VERSION_CODE, "--version-name", VERSION_NAME])
 
     srcs = []
@@ -70,8 +72,9 @@ def main():
                 srcs.append(os.path.join(dirpath, f))
     if not srcs:
         raise SystemExit("no java sources")
+    cp = os.pathsep.join([ANDROID_JAR] + [p for p in LIBS if os.path.exists(p)])
     run([javac, "-encoding", "UTF-8", "-source", "8", "-target", "8",
-         "-classpath", ANDROID_JAR, "-nowarn", "-d", os.path.join(BUILD, "classes")] + srcs)
+         "-classpath", cp, "-nowarn", "-d", os.path.join(BUILD, "classes")] + srcs)
 
     classes = []
     cdir = os.path.join(BUILD, "classes")
@@ -79,8 +82,8 @@ def main():
         for f in files:
             if f.endswith(".class"):
                 classes.append(os.path.join(dirpath, f))
-    run([d8, "--lib", ANDROID_JAR, "--min-api", "21", "--release",
-         "--output", os.path.join(BUILD, "dex")] + classes)
+    run([d8, "--lib", ANDROID_JAR, "--min-api", MIN_SDK, "--release",
+         "--output", os.path.join(BUILD, "dex")] + classes + [p for p in LIBS if os.path.exists(p)])
 
     dex = os.path.join(BUILD, "dex", "classes.dex")
     if not os.path.exists(dex):
