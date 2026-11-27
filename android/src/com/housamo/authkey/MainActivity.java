@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
     static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.11";
+    static final String CURRENT_VER = "1.0.12";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -73,6 +73,12 @@ public class MainActivity extends Activity {
     private TextView rowSvcVal, rowModeVal, rowBatteryVal, rowNotifVal, rowGameVerVal, rowExportVal, rowUpdateVal;
     private TextView rowBakVal;
     private static final int REQ_TREE = 0x71;
+    private static final int REQ_TREE_COPY = 0x72;
+    private static final int REQ_TREE_BAK = 0x73;
+    private final java.util.List<Account> exportEntries = new java.util.ArrayList<Account>();
+    private Account copyTarget = null;
+    private boolean copyMove = false;
+    private TextView rowBackupVal;
     private TextView tvLog;
     private ScrollView logScroll;
     private ListView list;
@@ -80,7 +86,7 @@ public class MainActivity extends Activity {
     private final List<Account> accounts = new ArrayList<Account>();
     private final List<Account> accView = new ArrayList<Account>();
     private int accTab = 0;
-    private Button segA, segB, bMain, bRename, bCopy, bDel;
+    private Button segA, segB, bMain, bRename, bDel;
     private TextView emptyHint, tvAccHint;
     /** 游戏里当前正在用的 key 指纹（后台读，用来在卡片上标「游戏在用」）。 */
     private String curFp = null;
@@ -457,25 +463,11 @@ public class MainActivity extends Activity {
         LinearLayout p = page();
         p.addView(pageTitle("任务"));
         TextView sub = new TextView(this);
-        sub.setText("导入 / 导出 / 日志 都在这里");
+        sub.setText("提取 / 复制到其他文件夹 / 日志 都在这里");
         sub.setTextSize(12);
         sub.setTextColor(Color.parseColor("#9AA3B0"));
         sub.setPadding(dp(2), 0, 0, dp(8));
         p.addView(sub);
-
-        LinearLayout sv = card();
-        sv.addView(caption("存到哪个文件夹"));
-        rowSaved = value(0, exportRootLabel());
-        sv.addView(rowWith(rowSaved, "点此选择文件夹", new View.OnClickListener() {
-            public void onClick(View v) { chooseExportDir(); }
-        }));
-        TextView hint = new TextView(this);
-        hint.setText("提取完会让你起一个名字，key 自动存成 选中文件夹/名字/AuthKey.txt，不用再点导出。");
-        hint.setTextSize(11);
-        hint.setTextColor(Color.parseColor("#9AA3B0"));
-        hint.setPadding(dp(2), dp(2), 0, dp(4));
-        sv.addView(hint);
-        p.addView(sv, cardParams(0));
 
         LinearLayout cur = card();
         rowSelVal = value(0, "未选择");
@@ -483,45 +475,19 @@ public class MainActivity extends Activity {
             public void onClick(View v) { showPage(2); }
         }));
         TextView ch = new TextView(this);
-        ch.setText("点这一行去「账号」页挑一个 key，下面就能导入到游戏");
+        ch.setText("点这一行去「账号」页挑一个 key，下面两个操作都针对它");
         ch.setTextSize(11);
         ch.setTextColor(Color.parseColor("#9AA3B0"));
         ch.setPadding(dp(2), dp(2), 0, dp(4));
         cur.addView(ch);
         p.addView(cur, cardParams(0));
 
-        LinearLayout bk = card();
-        TextView bkt = new TextView(this);
-        bkt.setText("导入前备份");
-        bkt.setTextSize(14);
-        bkt.setTextColor(Color.parseColor("#1B1F24"));
-        bkt.setPadding(dp(2), dp(13), dp(2), 0);
-        bk.addView(bkt);
-        rowBakVal = value(0, lastBackupPath().replace("导入前备份/", "导入前备份/\n"));
-        rowBakVal.setTextSize(12);
-        rowBakVal.setPadding(dp(2), dp(3), dp(2), dp(13));
-        rowBakVal.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { toast(lastBackupPath()); }
-        });
-        bk.addView(rowBakVal);
-        TextView bh = new TextView(this);
-        bh.setText("每次导入前，都会先把游戏里正在用的 key 存到 Download/东放Key/导入前备份/，再写入你选的 key。原 key 丢了就很难找回。");
-        bh.setTextSize(11);
-        bh.setTextColor(Color.parseColor("#9AA3B0"));
-        bh.setPadding(dp(2), dp(2), 0, dp(4));
-        bk.addView(bh);
-        p.addView(bk, cardParams(0));
-
-        p.addView(taskCard("提取当前账号的 key", "把游戏里正在登录的账号 key 抽出来，存进账号库，并自动存一份到上面选的文件夹。", new View.OnClickListener() {
+        p.addView(taskCard("提取当前账号的 key", "把游戏里正在登录的账号 key 抽出来存进账号库，并自动存一份到「设置 → 导出位置」的文件夹。", new View.OnClickListener() {
             public void onClick(View v) { doExtract(); }
         }), cardParams(0));
 
-        p.addView(taskCard("将当前选择的 key 导入到游戏", "先停掉游戏、把游戏原来的 key 备份一份，再写入你选的 key，写完回读核对。", new View.OnClickListener() {
-            public void onClick(View v) { doImport(); }
-        }), cardParams(0));
-
-        p.addView(taskCard("把选中的 key 再存一份到文件夹", "不想重安装游戏、只想把 key 导出成文件时用。", new View.OnClickListener() {
-            public void onClick(View v) { doExport(); }
+        p.addView(taskCard("把选中的 key 复制到其他文件夹", "复制一份到你指定的文件夹（备份到别处、发给另一台设备都行）；选「移动」的话，复制完会把原来导出文件夹里的那份删掉。", new View.OnClickListener() {
+            public void onClick(View v) { startCopyMove(); }
         }), cardParams(0));
 
         LinearLayout lg = card();
@@ -663,10 +629,6 @@ public class MainActivity extends Activity {
 
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
-        bCopy = mkBtn("复制 key", false);
-        bCopy.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { doCopy(); }
-        });
         bRename = mkBtn("重命名", false);
         bRename.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doRename(); }
@@ -675,7 +637,6 @@ public class MainActivity extends Activity {
         bDel.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doDelete(); }
         });
-        row1.addView(bCopy, weight());
         row1.addView(bRename, weight());
         row1.addView(bDel, weight());
         op.addView(row1);
@@ -715,13 +676,24 @@ public class MainActivity extends Activity {
         p.addView(perm, cardParams(0));
 
         LinearLayout exp = card();
-        exp.addView(caption("导出"));
+        exp.addView(caption("存储位置"));
         rowExportVal = value(0, exportRootLabel());
-        exp.addView(rowWith(rowExportVal, "导出位置（点此选择文件夹）", new View.OnClickListener() {
+        exp.addView(rowWithButton(rowExportVal, "导出位置", "更改", new View.OnClickListener() {
             public void onClick(View v) { chooseExportDir(); }
         }));
         exp.addView(divider());
-        exp.addView(rowWith(value(0, "每个账号一个子文件夹，里面是 AuthKey.txt"), "结构", null));
+        rowBackupVal = value(0, backupRootLabel());
+        exp.addView(rowWithButton(rowBackupVal, "备份位置", "更改", new View.OnClickListener() {
+            public void onClick(View v) { chooseBackupDir(); }
+        }));
+        exp.addView(divider());
+        exp.addView(rowWith(value(0, "每个 key 一个子文件夹，里面是 AuthKey.txt"), "导出结构", null));
+        TextView sh = new TextView(this);
+        sh.setText("备份位置是每次导入前，自动把游戏里正在用的 key 存一份的地方。不换就存在 Download/东放Key/导入前备份/。");
+        sh.setTextSize(11);
+        sh.setTextColor(Color.parseColor("#9AA3B0"));
+        sh.setPadding(dp(2), dp(10), dp(2), dp(2));
+        exp.addView(sh);
         p.addView(exp, cardParams(0));
 
         LinearLayout about = card();
@@ -841,17 +813,38 @@ public class MainActivity extends Activity {
 
             boolean inUse = curFp != null && curFp.equals(a.fpShort());
             boolean dup = isDup(a);
-            if (inUse || dup) {
+            boolean tagSrc = accTab == 1;
+            if (inUse || dup || tagSrc) {
                 LinearLayout chips = new LinearLayout(MainActivity.this);
                 chips.setOrientation(LinearLayout.HORIZONTAL);
                 chips.setPadding(0, dp(5), 0, 0);
-                if (inUse) chips.addView(chip("游戏在用", "#19A974", "#E8F7EF"));
+                int n = 0;
+                if (tagSrc) {
+                    chips.addView(chip(a.isBackup() ? "自动备份" : "导出",
+                            a.isBackup() ? "#8A6D1F" : "#2F6BFF",
+                            a.isBackup() ? "#FBF3DA" : "#EAF0FF"));
+                    n++;
+                }
+                if (inUse) {
+                    TextView c = chip("游戏在用", "#19A974", "#E8F7EF");
+                    if (n == 0) chips.addView(c);
+                    else {
+                        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                        cl.setMargins(dp(6), 0, 0, 0);
+                        chips.addView(c, cl);
+                    }
+                    n++;
+                }
                 if (dup) {
                     TextView c = chip("重复", "#8A6D1F", "#FBF3DA");
-                    LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                    cl.setMargins(dp(6), 0, 0, 0);
-                    chips.addView(c, cl);
+                    if (n == 0) chips.addView(c);
+                    else {
+                        LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                        cl.setMargins(dp(6), 0, 0, 0);
+                        chips.addView(c, cl);
+                    }
                 }
                 col.addView(chips);
             }
@@ -959,6 +952,33 @@ public class MainActivity extends Activity {
         v.setTextSize(13);
         v.setTextColor(Color.parseColor("#8A93A0"));
         return v;
+    }
+
+    /** 一行：左边标题 + 右边一个明显的「更改」按钮，路径显示在下面一行。 */
+    private LinearLayout rowWithButton(TextView val, String label, String btnText, View.OnClickListener click) {
+        LinearLayout r = new LinearLayout(this);
+        r.setOrientation(LinearLayout.VERTICAL);
+        r.setPadding(dp(2), dp(12), dp(2), dp(12));
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(14);
+        l.setTextColor(Color.parseColor("#1B1F24"));
+        top.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        Button b = mkBtn(btnText, true);
+        b.setTextSize(12);
+        b.setPadding(dp(16), dp(6), dp(16), dp(6));
+        top.addView(b);
+        r.addView(top);
+        val.setTextSize(12);
+        val.setPadding(0, dp(5), 0, 0);
+        r.addView(val);
+        b.setOnClickListener(click);
+        r.setClickable(true);
+        r.setOnClickListener(click);
+        return r;
     }
 
     private LinearLayout rowWith(TextView val, String label, View.OnClickListener click) {
@@ -1502,6 +1522,8 @@ public class MainActivity extends Activity {
             JSONArray arr = new JSONArray(raw);
             for (int i = 0; i < arr.length(); i++) {
                 Account a = Account.fromJson(arr.getJSONObject(i));
+                // 老版本把「从导出文件夹扫到的 key」也存进了库，这里迁移成正常账号（不再当导出条目）
+                if (a.note != null && a.note.contains("来自导出文件夹")) a.note = "";
                 if (a.key != null && a.key.length() > 0) accounts.add(a);
             }
         } catch (Exception e) {
@@ -1550,6 +1572,15 @@ public class MainActivity extends Activity {
         return n;
     }
 
+    /** 只在「导出文件夹里扫到、但账号库里还没有」的临时条目（不入库）。 */
+    private boolean isExportEntry(Account a) {
+        return a != null && exportEntries.contains(a);
+    }
+
+    private int countExportEntries() {
+        return exportEntries.size();
+    }
+
     private int countBackups() {
         int n = 0;
         for (Account a : accounts) if (a.isBackup()) n++;
@@ -1575,7 +1606,11 @@ public class MainActivity extends Activity {
             Account a = accounts.get(i);
             if (a.isBackup() == (accTab == 1)) accView.add(a);
         }
-        int na = countAccounts(), nb = countBackups();
+        if (accTab == 1) {
+            // 导出文件夹里扫到、库里还没有的 key 也列在备份分段里（只用于查看/导入，不入库）
+            for (int i = exportEntries.size() - 1; i >= 0; i--) accView.add(exportEntries.get(i));
+        }
+        int na = countAccounts(), nb = countBackups() + countExportEntries();
         if (segA != null) segA.setText("账号 " + na);
         if (segB != null) segB.setText("备份 " + nb);
         styleSeg(segA, accTab == 0);
@@ -1588,15 +1623,15 @@ public class MainActivity extends Activity {
                     : curFp;
             tvAccHint.setText("游戏里现在用的：指纹 " + cur + "\n"
                     + (accTab == 0
-                    ? "选一个账号 →「导入到游戏」覆盖当前登录（导入前自动备份现在的 key）。复制 / 改名 / 删除在第二排。"
-                    : "备份是每次导入前自动存下的原 key。选中一条点「导入到游戏」就能还原回去。"));
+                    ? "选一个账号 →「导入到游戏」覆盖当前登录（导入前自动备份现在的 key）。改名 / 删除在第二排，长按有更多操作。"
+                    : "自动备份（每次导入前存下的原 key）和导出文件夹里的 key 都在这里。选中一条点「导入到游戏」就能还原回去。"));
         }
         if (emptyHint != null) {
             if (accView.isEmpty()) {
                 emptyHint.setVisibility(View.VISIBLE);
                 emptyHint.setText(accTab == 0
                         ? "还没有账号。去「任务」页点「提取当前账号的 key」。"
-                        : "还没有备份。每次导入前，游戏里原来的 key 会自动存到这里。");
+                        : "还没有备份或导出的 key。每次导入前，游戏里原来的 key 会自动存到这里；「导出位置」文件夹里的 key 也会列进来。");
             } else {
                 emptyHint.setVisibility(View.GONE);
             }
@@ -2017,17 +2052,35 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
-        if (req != REQ_TREE || res != RESULT_OK || data == null || data.getData() == null) return;
+        if (res != RESULT_OK || data == null || data.getData() == null) return;
         android.net.Uri uri = data.getData();
+        if (req != REQ_TREE && req != REQ_TREE_COPY && req != REQ_TREE_BAK) return;
         try {
             getContentResolver().takePersistableUriPermission(uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
         } catch (Throwable ignored) {
         }
-        String label = uri.getLastPathSegment();
-        if (label == null) label = uri.toString();
-        int c = label.indexOf(':');
-        if (c >= 0) label = label.substring(c + 1);
+        if (req == REQ_TREE_COPY) {
+            Account a = copyTarget;
+            boolean mv = copyMove;
+            copyTarget = null;
+            copyMove = false;
+            if (a == null) {
+                toast("没有选中的 key");
+                return;
+            }
+            doCopyToTree(uri, a, mv);
+            return;
+        }
+        String label = treeLabel(uri);
+        if (req == REQ_TREE_BAK) {
+            getPreferences(MODE_PRIVATE).edit().putString("backupRoot", uri.toString())
+                    .putString("backupRootLabel", label + "/").apply();
+            if (rowBackupVal != null) rowBackupVal.setText(label + "/");
+            log("[备份] 位置已改为：" + label + "/");
+            toast("备份位置已更新");
+            return;
+        }
         getPreferences(MODE_PRIVATE).edit().putString("exportRoot", uri.toString()).putString("exportRootLabel", label).apply();
         if (rowExportVal != null) rowExportVal.setText(label);
         if (rowSaved != null) rowSaved.setText(label + "/");
@@ -2208,7 +2261,6 @@ public class MainActivity extends Activity {
         if (a == null) return;
         final java.util.ArrayList<String> items = new java.util.ArrayList<String>();
         items.add("导入到游戏");
-        items.add("复制 key 到剪贴板");
         if (!a.isBackup()) items.add("重命名");
         items.add("删除");
         new AlertDialog.Builder(this)
@@ -2217,7 +2269,6 @@ public class MainActivity extends Activity {
                     public void onClick(android.content.DialogInterface d, int w) {
                         String s = items.get(w);
                         if (s.startsWith("导入")) doImport();
-                        else if (s.startsWith("复制")) doCopy();
                         else if (s.startsWith("重命名")) doRename();
                         else doDelete();
                     }
@@ -2274,16 +2325,130 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void doCopy() {
-        Account a = selected();
+    // ---------- 复制 / 移动到其他文件夹 ----------
+
+    private void startCopyMove() {
+        final Account a = selected();
         if (a == null) {
-            toast("请先选中一个账号");
+            toast("先到「账号」页选一个 key");
+            showPage(2);
             return;
         }
-        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        cm.setPrimaryClip(ClipData.newPlainText("AuthKey", a.key));
-        log("[复制] 已复制 " + a.name + " 的 Key 到剪贴板");
-        toast("已复制");
+        new AlertDialog.Builder(this)
+                .setTitle("把「" + a.name + "」放到其他文件夹")
+                .setItems(new String[]{"复制一份（原来的保留）", "移动过去（删掉原来导出的那份）"},
+                        new android.content.DialogInterface.OnClickListener() {
+                            public void onClick(android.content.DialogInterface d, int w) {
+                                copyTarget = a;
+                                copyMove = (w == 1);
+                                try {
+                                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                                    startActivityForResult(i, REQ_TREE_COPY);
+                                } catch (Throwable t) {
+                                    toast("无法打开文件夹选择器");
+                                }
+                            }
+                        })
+                .show();
+    }
+
+    private void doCopyToTree(final android.net.Uri tree, final Account a, final boolean move) {
+        log("[复制] 正在写入 " + a.name + " …");
+        pool.execute(new Runnable() {
+            public void run() {
+                final String out = writeAccountToTree(tree, a.name, a.key.getBytes());
+                if (out == null) {
+                    runOnUiThread(new Runnable() {
+                        public void run() {
+                            log("[复制] 失败：写不进这个文件夹，换一个目录或用「导出位置」再试。");
+                            toast("复制失败");
+                        }
+                    });
+                    return;
+                }
+                final boolean removed = move && deleteExportCopy(a);
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        a.folder = out;
+                        saveVault();
+                        refreshList();
+                        if (move) {
+                            log(removed ? ("[移动] 已写入 " + out + "，原导出文件已删除")
+                                    : ("[复制] 已写入 " + out + "（原来那份没删掉，可以手动清理）"));
+                        } else {
+                            log("[复制] 已写入 " + out);
+                        }
+                        toast(move ? "已移动" : "已复制");
+                    }
+                });
+            }
+        });
+    }
+
+    private String writeAccountToTree(android.net.Uri tree, String name, byte[] data) {
+        try {
+            String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            android.net.Uri rootDoc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, treeId);
+            String safe = safeName(name);
+            android.net.Uri sub = findChild(rootDoc, safe);
+            if (sub == null) {
+                sub = android.provider.DocumentsContract.createDocument(getContentResolver(), rootDoc,
+                        "vnd.android.document/directory", safe);
+            }
+            if (sub == null) return null;
+            android.net.Uri old = findChild(sub, "AuthKey.txt");
+            if (old != null) {
+                try { getContentResolver().delete(old, null, null); } catch (Throwable ignored) { }
+            }
+            android.net.Uri f = android.provider.DocumentsContract.createDocument(getContentResolver(),
+                    sub, "text/plain", "AuthKey.txt");
+            if (f == null) return null;
+            OutputStream os = getContentResolver().openOutputStream(f);
+            os.write(data);
+            os.flush();
+            os.close();
+            return treeLabel(tree) + "/" + safe + "/AuthKey.txt";
+        } catch (Throwable t) {
+            log("[复制] 写入出错：" + t);
+            return null;
+        }
+    }
+
+    private String treeLabel(android.net.Uri tree) {
+        if (tree == null) return "所选文件夹";
+        String label = null;
+        try {
+            label = tree.getLastPathSegment();
+            int c = label == null ? -1 : label.indexOf(':');
+            if (c >= 0 && c + 1 < label.length()) label = label.substring(c + 1);
+        } catch (Throwable ignored) { }
+        return label == null || label.length() == 0 ? "所选文件夹" : label;
+    }
+
+    /** 账号对应的导出文件（只在能确定是绝对路径时返回）。 */
+    private File exportFileOf(Account a) {
+        if (a == null || a.folder == null || a.folder.length() == 0) return null;
+        if (a.folder.startsWith("/")) return new File(a.folder);
+        if (a.folder.startsWith("Download/")) {
+            return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    a.folder.substring("Download/".length()));
+        }
+        return null;
+    }
+
+    private boolean deleteExportCopy(Account a) {
+        File f = exportFileOf(a);
+        if (f == null) return false;
+        try {
+            if (f.isFile() && f.delete()) return true;
+        } catch (Throwable ignored) { }
+        if (hasShell()) {
+            Res r = shell("rm -f '" + f.getAbsolutePath() + "'", 8000);
+            return r.code == 0;
+        }
+        return false;
     }
 
     private void doRename() {
@@ -2438,21 +2603,23 @@ public class MainActivity extends Activity {
 
     private int syncFromExportFolder() {
         List<Account> found = scanExportRoot();
+        exportEntries.clear();
         int changed = 0;
         for (Account f : found) {
-            Account hit = null;
+            boolean inVault = false;
             for (Account a : accounts) {
-                if (a.key != null && a.key.trim().equals(f.key)) { hit = a; break; }
+                if (a.key != null && a.key.trim().equals(f.key)) {
+                    inVault = true;
+                    if (a.folder == null || a.folder.length() == 0 || !a.folder.equals(f.folder)) {
+                        a.folder = f.folder;
+                        changed++;
+                    }
+                    break;
+                }
             }
-            if (hit == null) {
-                accounts.add(f);
-                changed++;
-            } else {
-                if (hit.folder == null || hit.folder.length() == 0) { hit.folder = f.folder; changed++; }
-                if (hit.name == null || hit.name.length() == 0) { hit.name = f.name; changed++; }
-            }
+            if (!inVault) exportEntries.add(f);
         }
-        return changed;
+        return exportEntries.size() > 0 ? (exportEntries.size() + changed) : changed;
     }
 
     private void syncFromExportFolderAsync() {
@@ -2474,9 +2641,63 @@ public class MainActivity extends Activity {
 
     // ---------- 导入前备份 ----------
 
+    private android.net.Uri backupRootUri() {
+        String u = getPreferences(MODE_PRIVATE).getString("backupRoot", "");
+        return u.length() == 0 ? null : android.net.Uri.parse(u);
+    }
+
+    private String backupRootLabel() {
+        String l = getPreferences(MODE_PRIVATE).getString("backupRootLabel", "");
+        return l.length() == 0 ? "Download/东放Key/导入前备份/" : l;
+    }
+
+    private void chooseBackupDir() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, REQ_TREE_BAK);
+        } catch (Throwable t) {
+            toast("无法打开文件夹选择器");
+        }
+    }
+
+    /** 往用户选的备份目录根部写一个文件（读回校验靠调用方的长度/回读逻辑）。 */
+    private String writeFileToTreeRoot(android.net.Uri tree, String fileName, byte[] data) {
+        try {
+            String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            android.net.Uri rootDoc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, treeId);
+            android.net.Uri old = findChild(rootDoc, fileName);
+            if (old != null) {
+                try { getContentResolver().delete(old, null, null); } catch (Throwable ignored) { }
+            }
+            android.net.Uri f = android.provider.DocumentsContract.createDocument(getContentResolver(),
+                    rootDoc, "text/plain", fileName);
+            if (f == null) return null;
+            OutputStream os = getContentResolver().openOutputStream(f);
+            os.write(data);
+            os.flush();
+            os.close();
+            return backupRootLabel() + fileName;
+        } catch (Throwable t) {
+            log("[备份] 自定义目录写入出错：" + t);
+            return null;
+        }
+    }
+
     private String backupRootPath() {
         return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
                 + "/东放Key/导入前备份";
+    }
+
+    /** 账号库里是否已经有一份完全相同的自动备份。 */
+    private Account findBackupOfKey(String key) {
+        if (key == null) return null;
+        String k = key.trim();
+        for (Account b : accounts) {
+            if (b.isBackup() && !isExportEntry(b) && b.key != null && b.key.trim().equals(k)) return b;
+        }
+        return null;
     }
 
     private String lastBackupPath() {
@@ -2488,6 +2709,12 @@ public class MainActivity extends Activity {
         byte[] data = key.getBytes();
         String name = "AuthKey-" + new SimpleDateFormat("MMdd-HHmmss", Locale.US).format(new Date())
                 + "-" + hash(key).substring(0, 8) + ".txt";
+        android.net.Uri btree = backupRootUri();
+        if (btree != null) {
+            String t = writeFileToTreeRoot(btree, name, data);
+            if (t != null) return t;
+            log("[备份] 自定义备份目录写入失败，改用默认目录");
+        }
         String rel = "Download/东放Key/导入前备份/" + name;
         String dir = backupRootPath();
         try {
@@ -2684,6 +2911,10 @@ public class MainActivity extends Activity {
                 if (cur != null) {
                     old = new String(cur).trim();
                     if (old.length() >= 8) {
+                        Account already = findBackupOfKey(old);
+                        if (already != null) {
+                            log("[备份] 这个 key 已经备份过（" + already.name + "），跳过重复备份");
+                        } else {
                         final String saved = backupCurrentKey(old, a.name);
                         if (saved == null) backupOk[0] = false;
                         final Account bak = new Account("导入前备份 " + stamp(), old);
@@ -2697,7 +2928,6 @@ public class MainActivity extends Activity {
                                 accounts.add(bak);
                                 saveVault();
                                 refreshList();
-                                if (rowBakVal != null) rowBakVal.setText(saved == null ? ("导入前备份 " + bak.created) : saved.replace("导入前备份/", "导入前备份/\n"));
                                 if (saved != null) {
                                     getPreferences(MODE_PRIVATE).edit().putString("lastBackup", saved).apply();
                                 }
@@ -2706,6 +2936,7 @@ public class MainActivity extends Activity {
                         log(saved == null
                                 ? "[备份] 当前 key 已存进账号库（文件写入失败，请手动导出一次）"
                                 : ("[备份] 当前 key 已存到 " + saved));
+                        }
                     }
                 }
                 if (!backupOk[0]) {
