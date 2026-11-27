@@ -26,6 +26,11 @@ public class ApkProvider extends ContentProvider {
         return Uri.parse("content://" + AUTHORITY + "/qr/" + f.getName());
     }
 
+    /** 相机「扫一扫」的落盘目标：系统相机需要可写，所以单独一段。 */
+    public static Uri uriForShot(File f) {
+        return Uri.parse("content://" + AUTHORITY + "/shot/" + f.getName());
+    }
+
     private File base() {
         return new File(getContext().getExternalFilesDir(null), "update");
     }
@@ -49,6 +54,11 @@ public class ApkProvider extends ContentProvider {
             throw new FileNotFoundException("bad name: " + uri);
         }
         File f;
+        if (seg.size() >= 2 && "shot".equals(seg.get(0))) {
+            // 只有这一段落盘位置对相机可写，qr/ 分享出来的仍是只读。
+            return ParcelFileDescriptor.open(new File(qrBase(), name),
+                    ParcelFileDescriptor.parseMode(mode));
+        }
         if (seg.size() >= 2 && "qr".equals(seg.get(0))) {
             f = new File(qrBase(), name);
         } else {
@@ -60,6 +70,7 @@ public class ApkProvider extends ContentProvider {
     @Override
     public String getType(Uri uri) {
         java.util.List<String> seg = uri.getPathSegments();
+        if (seg.size() >= 2 && "shot".equals(seg.get(0))) return "image/jpeg";
         if (seg.size() >= 2 && "qr".equals(seg.get(0))) return "image/png";
         return "application/vnd.android.package-archive";
     }
