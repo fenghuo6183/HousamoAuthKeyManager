@@ -862,6 +862,10 @@ class App:
                     self.update_status.configure(text="暂时查不到更新（可点「检查更新」再试）",
                                                  fg=self.pal["text_muted"])
                 return
+            if not result:
+                self.update_status.configure(text="暂时查不到 Windows 版（可点「检查更新」再试）",
+                                             fg=self.pal["text_muted"])
+                return
             tag = result.get("tag_name") or ""
             if not updater.is_newer(tag, theme.APP_VERSION):
                 self.update_status.configure(text="已是最新版本（%s）" % (tag or "?"),
