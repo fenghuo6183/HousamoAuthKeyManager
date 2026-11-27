@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
     static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.7";
+    static final String CURRENT_VER = "1.0.8";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -649,7 +649,12 @@ public class MainActivity extends Activity {
 
         LinearLayout about = card();
         about.addView(caption("关于"));
-        about.addView(rowWith(value(0, "1.0.5"), "版本", null));
+        String selfVer = "?";
+        try {
+            android.content.pm.PackageInfo spi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            selfVer = (spi.versionName == null ? "?" : spi.versionName) + " (" + spi.versionCode + ")";
+        } catch (Throwable ignored) { }
+        about.addView(rowWith(value(0, selfVer), "版本", null));
         about.addView(divider());
         rowUpdateVal = value(0, "未检查");
         about.addView(rowWith(rowUpdateVal, "检查更新", new View.OnClickListener() {
