@@ -18,8 +18,8 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
-VERSION_CODE = "19"
-VERSION_NAME = "1.0.18"
+VERSION_CODE = "20"
+VERSION_NAME = "1.0.19"
 MIN_SDK = "24"
 LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar", "zxing-core.jar")]
 
@@ -74,13 +74,19 @@ def main():
                     flat.append(os.path.join(dirpath, f))
 
     base = os.path.join(BUILD, "base.apk")
+    gen_dir = os.path.join(BUILD, "gen")
     run([aapt2, "link", "-o", base, "-I", ANDROID_JAR,
          "--manifest", os.path.join(HERE, "AndroidManifest.xml"),
          "--min-sdk-version", MIN_SDK, "--target-sdk-version", "34",
-         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME] + flat)
+         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME,
+         "--java", gen_dir] + flat)
 
     srcs = []
     for dirpath, _, files in os.walk(os.path.join(HERE, "src")):
+        for f in files:
+            if f.endswith(".java"):
+                srcs.append(os.path.join(dirpath, f))
+    for dirpath, _, files in os.walk(gen_dir):
         for f in files:
             if f.endswith(".java"):
                 srcs.append(os.path.join(dirpath, f))
