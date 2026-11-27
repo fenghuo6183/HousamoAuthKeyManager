@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.21";
+    static final String CURRENT_VER = "1.0.22";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -2163,12 +2163,18 @@ public class MainActivity extends Activity {
     }
 
     private AlertDialog showCard(LinearLayout card) {
+        return showCard(card, true);
+    }
+
+    /** dismissOnOutside=false：点空白处不再关掉弹窗，只能点里面的按钮，防止误触关掉。 */
+    private AlertDialog showCard(LinearLayout card, boolean dismissOnOutside) {
         ScrollView sv = new ScrollView(this);
         sv.setVerticalScrollBarEnabled(false);
         sv.setClipToPadding(false);
         sv.addView(card, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog d = new AlertDialog.Builder(this).setView(sv).create();
+        d.setCanceledOnTouchOutside(dismissOnOutside);
         d.show();
         android.view.Window w = d.getWindow();
         if (w != null) {
@@ -3493,7 +3499,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
         }, false);
         c.addView(row);
-        h[0] = showCard(c);
+        h[0] = showCard(c, false);
 
         final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
         for (int i = 4; i >= 1; i--) {
@@ -4030,7 +4036,7 @@ public class MainActivity extends Activity {
                 public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
             }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
             c.addView(row);
-            holder[0] = showCard(c);
+            holder[0] = showCard(c, false);
         } catch (Throwable t) {
             log("[更新] 弹窗失败：" + t);
         }
@@ -4633,7 +4639,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
         }, false);
         c.addView(row);
-        h[0] = showCard(c);
+        h[0] = showCard(c, false);
     }
 
     private void replaceAccountKey(Account a, String newKey) {
