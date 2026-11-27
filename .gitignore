@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*.spec
+
+# 开发工具链（体积大，按需用 tools/ 下载）
+.tools/
+.tmp/
+
+# 构建产物
+build/
+dist/
+win/build/
+win/dist/
+android/build/
+
+# 系统
+Thumbs.db
+.DS_Store
