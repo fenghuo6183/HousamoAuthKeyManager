@@ -53,7 +53,7 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.6.apk` 安装（Android 7.0+）。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.7.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
@@ -69,11 +69,13 @@
 - **账号**：这里显示的不只是 App 自己的账号库，还会**自动扫描导出文件夹**（默认 `Download/东放Key/<名字>/AuthKey.txt`，也包含你在设置里换过的目录），把里面的 key 一并列出来，每行显示名字、指纹、大小、导入时间、来源路径；选中后可复制 / 重命名 / 删除。换手机、清了 App 数据，只要文件夹还在，进来就能重新看到全部 key（列表顶部有「重新扫描 key」一行可手动触发）。
 - **设置**：权限、导出位置、检查更新、项目主页（点一下跳 GitHub）、版本、清空账号库。
 
-**自动检查更新**：每次打开 App 会自动去 GitHub 查最新 Release，有新版就在「设置 → 检查更新」显示「发现 x.y.z，点此下载」，点一下直接跳下载页。
+**自动检查更新（App 内直接更新）**：每次打开 App 会自动去 GitHub 查最新 Release，**有新版就直接弹窗提示**（不藏在设置里）。点「立即更新」会当场下载 APK 并调起系统安装器覆盖安装，账号库和导出文件夹里的 key 都不动；如果系统还没允许「安装未知应用」，会先带你去开那个开关，回来自动继续装。设置页的「检查更新」也能手动触发，另有「去网页」按钮可走浏览器。
 
 **导出位置可自选**：设置 → 导出位置 → 选一个文件夹（默认 `Download/东放Key/`），之后每个账号都会在下面建一个以账号名命名的子文件夹，里面放 `AuthKey.txt`。
 
 **导入前一定先备份**：每次点「导入」时，App 会先把**游戏里正在用的 key** 原样存一份到 `Download/东放Key/导入前备份/AuthKey-MMdd-HHmmss-<指纹>.txt`，同时往账号库里加一条「导入前备份 <时间>」记录，然后才写入你选的 key。写完会回读校验；万一写入失败，会尝试把原 key 写回去，并在日志里说明。**换号换错了想换回去，去这个备份目录拿最新那个文件导入即可**。备份是明文，请自己保管，别随手发人。
+
+**备份写不出来就不导入**：如果备份那一步没成功（没存储权限、空间满了等），导入会被**直接中止**，绝不会在没备份的情况下覆盖你现在登录的 key，日志里会写明原因。
 
 **首次启动的免责声明**：第一次打开 App 会弹一个说明，必须**滚到底 + 等满 10 秒**「同意」按钮才会亮，点退出则关闭 App。里面写清了：本工具只复制文件、key 等同账号密码、备份文件在哪、覆盖风险、非官方工具、禁止盗号。
 
@@ -119,7 +121,7 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.6.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.7.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
@@ -145,6 +147,7 @@ Windows 端用 DPAPI 加密，绑定当前 Windows 账号；Android 端存在应
 
 ## 更新日志
 
+- **v1.0.7** — 支持 App 内直接更新：启动发现新版本就弹窗，点「立即更新」当场下载并覆盖安装（不再跳浏览器）；**备份失败则中止导入**，绝不在没备份的情况下覆盖原 key。
 - **v1.0.6** — 账号页自动读取导出文件夹里的 key（App 数据丢了文件夹还在就能恢复）；导入前自动备份原 key 到 `Download/东放Key/导入前备份/`，任务页显示最近一次备份路径，写入失败会自动回写原 key；首次启动弹免责声明，必须读完并等满 10 秒才能同意；Windows 端按钮文案同步改成「提取当前账号的 key」「将当前选择的 key 导入到游戏」。
 - **v1.0.5** — 设置页补上「项目主页」一键跳转；每次启动自动检查更新；修掉若干界面细节。
 - **v1.0.4** — 界面文案与排版微调。
