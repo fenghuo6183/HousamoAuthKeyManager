@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.22";
+    static final String CURRENT_VER = "1.0.23";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -2174,8 +2174,12 @@ public class MainActivity extends Activity {
         sv.addView(card, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         AlertDialog d = new AlertDialog.Builder(this).setView(sv).create();
-        d.setCanceledOnTouchOutside(dismissOnOutside);
+        // dismissOnOutside=false 时彻底关掉「窗口被取消」这条路：点空白、点返回键都关不掉，
+        // 只能点界面里的按钮。Dialog 在 show() 之前还建不出窗口，那时设 setCanceledOnTouchOutside
+        // 会被丢掉（1.0.22 就是栽在这上面），所以这里直接按 cancelable 来锁。
+        d.setCancelable(dismissOnOutside);
         d.show();
+        if (!dismissOnOutside) d.setCanceledOnTouchOutside(false);
         android.view.Window w = d.getWindow();
         if (w != null) {
             w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
