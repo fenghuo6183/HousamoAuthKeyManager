@@ -61,13 +61,16 @@ public class MainActivity extends Activity {
     static final String VAULT_KEY = "accounts";
 
     private TextView tvState;
-    private LinearLayout host, pageHome, pageAcc, pageSet;
-    private TextView tabHome, tabAcc, tabSet;
-    private TextView rowRootVal, rowGameVal, rowShzkVal, rowPermVal, rowCount, rowSaved;
+    private LinearLayout host, pageHome, pageTask, pageAcc, pageSet;
+    private TextView tabHome, tabTask, tabAcc, tabSet;
+    private TextView rowRootVal, rowGameVal, rowShzkVal, rowPermVal, rowCount, rowSaved, rowSelVal;
+    private TextView rowStoreVal, rowResVal, rowOsVal, rowVerVal;
+    private TextView rowSvcVal, rowModeVal, rowBatteryVal, rowNotifVal, rowGameVerVal, rowExportVal, rowUpdateVal;
+    private static final int REQ_TREE = 0x71;
     private TextView tvLog;
     private ScrollView logScroll;
     private ListView list;
-    private ArrayAdapter<String> adapter;
+    private AccountAdapter adapter;
     private final List<Account> accounts = new ArrayList<Account>();
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean rootChecked = false;
@@ -83,6 +86,7 @@ public class MainActivity extends Activity {
         String note = "";
         String key = "";
         String created = "";
+        String folder = "";
 
         Account() {
         }
@@ -104,6 +108,7 @@ public class MainActivity extends Activity {
             o.put("note", note);
             o.put("key", key);
             o.put("created", created);
+            o.put("folder", folder);
             return o;
         }
 
@@ -113,6 +118,7 @@ public class MainActivity extends Activity {
             a.note = o.optString("note", "");
             a.key = o.optString("key", "");
             a.created = o.optString("created", "");
+            a.folder = o.optString("folder", "");
             return a;
         }
     }
@@ -141,6 +147,67 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         loadVault();
         refreshList();
+        int startPage = getPreferences(MODE_PRIVATE).getInt("page", 0);
+        if (getIntent() != null && getIntent().hasExtra("page")) {
+            startPage = getIntent().getIntExtra("page", startPage);
+        }
+        if (startPage >= 0 && startPage <= 3) showPage(startPage);
+        pool.execute(new Runnable() {
+            public void run() {
+              try {
+                android.util.Log.i("HSK", "pool started");
+                log("[启动] 正在检查权限与游戏状态...");
+                final boolean[] rr = new boolean[]{false};
+                Thread rt = new Thread(new Runnable() {
+                    public void run() {
+                        try { rr[0] = checkRoot(); } catch (Throwable ignored) {}
+                    }
+                });
+                rt.start();
+                try { rt.join(2500); } catch (InterruptedException ignored) {}
+                hasRoot = rr[0];
+                rootChecked = true;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        updateState();
+                    }
+                });
+                log(hasRoot ? "[root] 已获取 root 权限，可直接读写游戏私有目录。" : "[root] 未获取 root。若已启动 Shizuku，点上方「Shizuku」授权后即可免 root 读写游戏目录。");
+                shizukuBinder = shizukuAlive();
+                if (shizukuBinder) {
+                    shizukuGranted = shizukuGrantedNow();
+                    log(shizukuGranted ? "[Shizuku] 已连接并授权：走 shell 通道，无需 root。"
+                                       : "[Shizuku] 已连接，尚未授权：点「Shizuku」按钮授权。");
+                } else {
+                    log("[Shizuku] 未连接（未安装 Shizuku 或服务未启动）。");
+                }
+                checkUpdate(false);
+                String found = findGamePackages();
+                log("[游戏] 检测到的相关包名：" + (found.length() == 0 ? "无（确认游戏装在同一台手机上）" : found));
+                log("[游戏] 数据目录 " + EXT_DIR + "：" + (new File(EXT_DIR).exists() ? "存在" : "App 无权直接访问（Android 11+ 正常，走 Shizuku/root 通道）"));
+                new Thread(new Runnable() {
+                    public void run() { autoExportMissing(); }
+                }).start();
+              } catch (Throwable t) {
+                android.util.Log.e("HSK", "pool crash", t);
+                log("[启动] 检查出错：" + t);
+              }
+            }
+        });
+    }
+
+
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        if (intent != null) {
+            setIntent(intent);
+            if (intent.hasExtra("page")) {
+                int pg = intent.getIntExtra("page", 0);
+                showPage(pg);
+                log("[页面] 切换到 " + pg);
+            }
+        }
         try {
             rikka.shizuku.Shizuku.addRequestPermissionResultListener(
                 new rikka.shizuku.Shizuku.OnRequestPermissionResultListener() {
@@ -158,29 +225,6 @@ public class MainActivity extends Activity {
                 });
         } catch (Throwable ignored) {
         }
-        pool.execute(new Runnable() {
-            public void run() {
-                hasRoot = checkRoot();
-                rootChecked = true;
-                runOnUiThread(new Runnable() {
-                    public void run() {
-                        updateState();
-                    }
-                });
-                log(hasRoot ? "[root] 已获取 root 权限，可直接读写游戏私有目录。" : "[root] 未获取 root。若已启动 Shizuku，点上方「Shizuku」授权后即可免 root 读写游戏目录。");
-                shizukuBinder = shizukuAlive();
-                if (shizukuBinder) {
-                    shizukuGranted = shizukuGrantedNow();
-                    log(shizukuGranted ? "[Shizuku] 已连接并授权：走 shell 通道，无需 root。"
-                                       : "[Shizuku] 已连接，尚未授权：点「Shizuku」按钮授权。");
-                } else {
-                    log("[Shizuku] 未连接（未安装 Shizuku 或服务未启动）。");
-                }
-                String found = findGamePackages();
-                log("[游戏] 检测到的相关包名：" + (found.length() == 0 ? "无（确认游戏装在同一台手机上）" : found));
-                log("[游戏] 数据目录 " + EXT_DIR + "：" + (new File(EXT_DIR).exists() ? "存在" : "App 无权直接访问（Android 11+ 正常，走 Shizuku/root 通道）"));
-            }
-        });
     }
 
     @Override
@@ -205,11 +249,13 @@ public class MainActivity extends Activity {
         root.addView(host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         pageHome = buildHome();
+        pageTask = buildTask();
         pageAcc = buildAccounts();
         pageSet = buildSettings();
-        host.addView(pageHome, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        host.addView(pageAcc, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        host.addView(pageSet, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        host.addView(pageHome, full());
+        host.addView(pageTask, full());
+        host.addView(pageAcc, full());
+        host.addView(pageSet, full());
 
         View line = new View(this);
         line.setBackgroundColor(Color.parseColor("#E6E9EF"));
@@ -219,19 +265,24 @@ public class MainActivity extends Activity {
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(Color.WHITE);
         nav.setPadding(0, dp(6), 0, dp(6));
-        tabHome = mkTab("任务");
+        tabHome = mkTab("首页");
+        tabTask = mkTab("任务");
         tabAcc = mkTab("账号");
         tabSet = mkTab("设置");
         tabHome.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { showPage(0); }
         });
-        tabAcc.setOnClickListener(new View.OnClickListener() {
+        tabTask.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { showPage(1); }
         });
-        tabSet.setOnClickListener(new View.OnClickListener() {
+        tabAcc.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { showPage(2); }
         });
+        tabSet.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { showPage(3); }
+        });
         nav.addView(tabHome, weightNav());
+        nav.addView(tabTask, weightNav());
         nav.addView(tabAcc, weightNav());
         nav.addView(tabSet, weightNav());
         root.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -252,19 +303,26 @@ public class MainActivity extends Activity {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
     }
 
+    private LinearLayout.LayoutParams full() {
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+    }
+
     private void showPage(int idx) {
         if (pageHome == null) return;
+        if (idx < 0 || idx > 3) idx = 0;
+        getPreferences(MODE_PRIVATE).edit().putInt("page", idx).apply();
         pageHome.setVisibility(idx == 0 ? View.VISIBLE : View.GONE);
-        pageAcc.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
-        pageSet.setVisibility(idx == 2 ? View.VISIBLE : View.GONE);
+        pageTask.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
+        pageAcc.setVisibility(idx == 2 ? View.VISIBLE : View.GONE);
+        pageSet.setVisibility(idx == 3 ? View.VISIBLE : View.GONE);
         int on = Color.parseColor("#2F6BFF");
         int off = Color.parseColor("#9AA3B0");
-        tabHome.setTextColor(idx == 0 ? on : off);
-        tabAcc.setTextColor(idx == 1 ? on : off);
-        tabSet.setTextColor(idx == 2 ? on : off);
-        tabHome.setTypeface(null, idx == 0 ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
-        tabAcc.setTypeface(null, idx == 1 ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
-        tabSet.setTypeface(null, idx == 2 ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        TextView[] tabs = new TextView[]{tabHome, tabTask, tabAcc, tabSet};
+        for (int i = 0; i < tabs.length; i++) {
+            if (tabs[i] == null) continue;
+            tabs[i].setTextColor(idx == i ? on : off);
+            tabs[i].setTypeface(null, idx == i ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        }
     }
 
     private LinearLayout page() {
@@ -286,62 +344,122 @@ public class MainActivity extends Activity {
 
     private LinearLayout buildHome() {
         LinearLayout p = page();
-        p.addView(pageTitle("任务"));
+        p.addView(pageTitle("首页"));
         TextView sub = new TextView(this);
-        sub.setText("提取 / 导入 / 导出");
+        sub.setText("东放账号管家  ·  备份 / 迁移 / 多开");
         sub.setTextSize(12);
         sub.setTextColor(Color.parseColor("#9AA3B0"));
         sub.setPadding(dp(2), 0, 0, dp(8));
         p.addView(sub);
 
-        LinearLayout st = card();
-        rowRootVal = value(0, "检测中…");
-        rowGameVal = value(0, "检测中…");
+        LinearLayout info = card();
+        rowResVal = value(0, "—");
+        rowGameVerVal = value(0, "—");
+        rowVerVal = value(0, "—");
+        rowSvcVal = value(0, "检测中...");
+        info.addView(rowWith(rowResVal, "屏幕分辨率", null));
+        info.addView(divider());
+        info.addView(rowWith(rowGameVerVal, "游戏版本", null));
+        info.addView(divider());
+        info.addView(rowWith(rowVerVal, "App 版本", null));
+        info.addView(divider());
+        info.addView(rowWith(rowSvcVal, "服务状态", null));
+        p.addView(info, cardParams(0));
+
+        LinearLayout mode = card();
+        rowModeVal = value(0, "检测中...");
+        mode.addView(rowWith(rowModeVal, "运行模式", null));
+        TextView mh = new TextView(this);
+        mh.setText("免 root 时走 Shizuku shell，有 root 时优先 root。");
+        mh.setTextSize(11);
+        mh.setTextColor(Color.parseColor("#9AA3B0"));
+        mh.setPadding(dp(2), dp(2), 0, dp(4));
+        mode.addView(mh);
+        p.addView(mode, cardParams(0));
+
+        LinearLayout perm = card();
         rowShzkVal = value(0, "未连接");
-        st.addView(rowWith(rowRootVal, "Root 权限", null));
-        st.addView(divider());
-        st.addView(rowWith(rowGameVal, "游戏", null));
-        st.addView(divider());
-        st.addView(rowWith(rowShzkVal, "Shizuku", new View.OnClickListener() {
+        rowRootVal = value(0, "检测中...");
+        rowStoreVal = value(0, "检测中...");
+        rowBatteryVal = value(0, "检测中...");
+        rowNotifVal = value(0, "检测中...");
+        perm.addView(rowWith(rowShzkVal, "Shizuku 权限", new View.OnClickListener() {
             public void onClick(View v) { askShizuku(); }
         }));
-        p.addView(st, cardParams(0));
+        perm.addView(divider());
+        perm.addView(rowWith(rowRootVal, "Root 权限", null));
+        perm.addView(divider());
+        perm.addView(rowWith(rowStoreVal, "外部存储权限", new View.OnClickListener() {
+            public void onClick(View v) { askStorage(); }
+        }));
+        perm.addView(divider());
+        perm.addView(rowWith(rowBatteryVal, "电池优化白名单", new View.OnClickListener() {
+            public void onClick(View v) { askBattery(); }
+        }));
+        perm.addView(divider());
+        perm.addView(rowWith(rowNotifVal, "通知权限", new View.OnClickListener() {
+            public void onClick(View v) { askNotif(); }
+        }));
+        p.addView(perm, cardParams(0));
+        fillDeviceInfo();
+
+        TextView more = new TextView(this);
+        more.setText("提取 / 导入 / 导出 / 运行日志 都在「任务」页");
+        more.setTextSize(11);
+        more.setTextColor(Color.parseColor("#9AA3B0"));
+        more.setPadding(dp(4), dp(8), 0, 0);
+        p.addView(more);
+        return p;
+    }
+
+    private LinearLayout buildTask() {
+        LinearLayout p = page();
+        p.addView(pageTitle("任务"));
+        TextView sub = new TextView(this);
+        sub.setText("导入 / 导出 / 日志 都在这里");
+        sub.setTextSize(12);
+        sub.setTextColor(Color.parseColor("#9AA3B0"));
+        sub.setPadding(dp(2), 0, 0, dp(8));
+        p.addView(sub);
 
         LinearLayout sv = card();
-        rowSaved = value(0, "Download/东放Key/");
-        sv.addView(rowWith(rowSaved, "导出的位置", null));
+        sv.addView(caption("存到哪个文件夹"));
+        rowSaved = value(0, exportRootLabel());
+        sv.addView(rowWith(rowSaved, "点此选择文件夹", new View.OnClickListener() {
+            public void onClick(View v) { chooseExportDir(); }
+        }));
         TextView hint = new TextView(this);
-        hint.setText("提取后可以自己命名，key 会存成 名字/AuthKey.txt");
+        hint.setText("提取完会让你起一个名字，key 自动存成 选中文件夹/名字/AuthKey.txt，不用再点导出。");
         hint.setTextSize(11);
         hint.setTextColor(Color.parseColor("#9AA3B0"));
-        hint.setPadding(dp(2), dp(8), 0, 0);
+        hint.setPadding(dp(2), dp(2), 0, dp(4));
         sv.addView(hint);
         p.addView(sv, cardParams(0));
 
-        LinearLayout op = card();
-        Button bExtract = mkBtn("提取当前 Key", true);
-        bExtract.setTextSize(15);
-        bExtract.setOnClickListener(new View.OnClickListener() {
+        LinearLayout cur = card();
+        rowSelVal = value(0, "未选择");
+        cur.addView(rowWith(rowSelVal, "当前账号", new View.OnClickListener() {
+            public void onClick(View v) { showPage(2); }
+        }));
+        TextView ch = new TextView(this);
+        ch.setText("点这一行去「账号」页挑一个 key，下面就能导入到游戏");
+        ch.setTextSize(11);
+        ch.setTextColor(Color.parseColor("#9AA3B0"));
+        ch.setPadding(dp(2), dp(2), 0, dp(4));
+        cur.addView(ch);
+        p.addView(cur, cardParams(0));
+
+        p.addView(taskCard("提取当前账号的 key", "把游戏里正在登录的账号 key 抽出来，存进账号库，并自动存一份到上面选的文件夹。", new View.OnClickListener() {
             public void onClick(View v) { doExtract(); }
-        });
-        Button bImport = mkBtn("导入选中到游戏", false);
-        bImport.setTextSize(15);
-        bImport.setOnClickListener(new View.OnClickListener() {
+        }), cardParams(0));
+
+        p.addView(taskCard("将当前选择的 key 导入到游戏", "先停掉游戏、把游戏原来的 key 备份一份，再写入你选的 key，写完回读核对。", new View.OnClickListener() {
             public void onClick(View v) { doImport(); }
-        });
-        op.addView(bExtract, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        LinearLayout.LayoutParams ip = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ip.setMargins(0, dp(8), 0, 0);
-        op.addView(bImport, ip);
-        Button bExport = mkBtn("导出选中到文件夹", false);
-        bExport.setTextSize(15);
-        bExport.setOnClickListener(new View.OnClickListener() {
+        }), cardParams(0));
+
+        p.addView(taskCard("把选中的 key 再存一份到文件夹", "不想重安装游戏、只想把 key 导出成文件时用。", new View.OnClickListener() {
             public void onClick(View v) { doExport(); }
-        });
-        LinearLayout.LayoutParams ep = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ep.setMargins(0, dp(8), 0, 0);
-        op.addView(bExport, ep);
-        p.addView(op, cardParams(0));
+        }), cardParams(0));
 
         LinearLayout lg = card();
         lg.addView(caption("运行日志"));
@@ -355,6 +473,34 @@ public class MainActivity extends Activity {
         lg.addView(logScroll, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         p.addView(lg, cardParams(1));
         return p;
+    }
+
+    private LinearLayout taskCard(String title, String desc, View.OnClickListener click) {
+        LinearLayout c = card();
+        LinearLayout head = new LinearLayout(this);
+        head.setOrientation(LinearLayout.HORIZONTAL);
+        head.setGravity(Gravity.CENTER_VERTICAL);
+        head.setPadding(0, dp(10), 0, dp(4));
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(15);
+        t.setTextColor(Color.parseColor("#101418"));
+        t.setTypeface(null, android.graphics.Typeface.BOLD);
+        Button b = mkBtn("开始", true);
+        b.setTextSize(13);
+        b.setMinHeight(dp(34));
+        b.setMinWidth(dp(68));
+        b.setOnClickListener(click);
+        head.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        head.addView(b);
+        c.addView(head);
+        TextView d = new TextView(this);
+        d.setText(desc);
+        d.setTextSize(12);
+        d.setTextColor(Color.parseColor("#8A93A0"));
+        d.setPadding(dp(2), 0, dp(2), dp(4));
+        c.addView(d);
+        return c;
     }
 
     private LinearLayout buildAccounts() {
@@ -378,7 +524,7 @@ public class MainActivity extends Activity {
         list.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
         list.setDivider(null);
         list.setSelector(roundRect(Color.parseColor("#EEF3FF"), 10, 0, 0));
-        adapter = new ArrayAdapter<String>(this, android.R.layout.simple_list_item_single_choice, new ArrayList<String>());
+        adapter = new AccountAdapter();
         list.setAdapter(adapter);
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             public void onItemClick(AdapterView<?> parent, View v, int pos, long id) {
@@ -450,15 +596,41 @@ public class MainActivity extends Activity {
         }));
         p.addView(perm, cardParams(0));
 
+        LinearLayout exp = card();
+        exp.addView(caption("导出"));
+        rowExportVal = value(0, exportRootLabel());
+        exp.addView(rowWith(rowExportVal, "导出位置（点此选择文件夹）", new View.OnClickListener() {
+            public void onClick(View v) { chooseExportDir(); }
+        }));
+        exp.addView(divider());
+        exp.addView(rowWith(value(0, "每个账号一个子文件夹，里面是 AuthKey.txt"), "结构", null));
+        p.addView(exp, cardParams(0));
+
         LinearLayout about = card();
         about.addView(caption("关于"));
-        about.addView(rowWith(value(0, "1.0.3"), "版本", null));
+        about.addView(rowWith(value(0, "1.0.5"), "版本", null));
         about.addView(divider());
-        about.addView(rowWith(value(0, "GitHub"), "项目主页", new View.OnClickListener() {
+        rowUpdateVal = value(0, "未检查");
+        about.addView(rowWith(rowUpdateVal, "检查更新", new View.OnClickListener() {
+            public void onClick(View v) { checkUpdate(true); }
+        }));
+        about.addView(divider());
+        about.addView(rowWith(value(0, "点此打开 ↗"), "项目主页", new View.OnClickListener() {
             public void onClick(View v) {
                 openUrl("https://github.com/fenghuo6183/HousamoAuthKeyManager");
             }
         }));
+        TextView url = new TextView(this);
+        url.setText("github.com/fenghuo6183/HousamoAuthKeyManager");
+        url.setTextSize(11);
+        url.setTextColor(Color.parseColor("#2F6BFF"));
+        url.setPadding(dp(2), dp(2), 0, dp(6));
+        url.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                openUrl("https://github.com/fenghuo6183/HousamoAuthKeyManager");
+            }
+        });
+        about.addView(url);
         about.addView(divider());
         about.addView(rowWith(value(0, "MIT"), "开源协议", null));
         TextView note = new TextView(this);
@@ -493,6 +665,129 @@ public class MainActivity extends Activity {
         bp.setMargins(0, dp(8), 0, 0);
         p.addView(bClear, bp);
         return p;
+    }
+
+    private class AccountAdapter extends android.widget.BaseAdapter {
+        public int getCount() { return accounts.size(); }
+        public Object getItem(int i) { return accounts.get(i); }
+        public long getItemId(int i) { return i; }
+
+        public View getView(int pos, View convert, ViewGroup parent) {
+            LinearLayout row = new LinearLayout(MainActivity.this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(dp(10), dp(11), dp(12), dp(11));
+            Account a = accounts.get(pos);
+            boolean on = list != null && list.getCheckedItemPosition() == pos;
+
+            LinearLayout col = new LinearLayout(MainActivity.this);
+            col.setOrientation(LinearLayout.VERTICAL);
+            TextView name = new TextView(MainActivity.this);
+            name.setText((pos + 1) + ". " + a.name);
+            name.setTextSize(14);
+            name.setTextColor(Color.parseColor("#101418"));
+            TextView sub = new TextView(MainActivity.this);
+            sub.setText(a.fp() + "  \u00B7  " + a.created);
+            sub.setTextSize(11);
+            sub.setTextColor(Color.parseColor("#8A93A0"));
+            sub.setPadding(0, dp(2), 0, 0);
+            TextView path = new TextView(MainActivity.this);
+            boolean exported = a.folder != null && a.folder.length() > 0;
+            path.setText(exported ? a.folder : expectedPath(a.name) + "（未导出，任务页可导出）");
+            path.setTextSize(10);
+            path.setTextColor(Color.parseColor(exported ? "#7C8794" : "#B9C0CB"));
+            path.setPadding(0, dp(2), 0, 0);
+            col.addView(name);
+            col.addView(sub);
+            col.addView(path);
+
+            TextView dot = new TextView(MainActivity.this);
+            dot.setText(on ? "\u25CF" : "\u25CB");
+            dot.setTextSize(15);
+            dot.setTextColor(Color.parseColor(on ? "#2F6BFF" : "#C9D0DA"));
+            dot.setPadding(dp(8), 0, 0, 0);
+
+            row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            row.addView(dot);
+            return row;
+        }
+    }
+
+    private boolean batteryIgnored() {
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean notifGranted() {
+        try {
+            android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            return nm != null && nm.areNotificationsEnabled();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private void askBattery() {
+        try {
+            Intent i = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            i.setData(android.net.Uri.parse("package:" + getPackageName()));
+            startActivity(i);
+        } catch (Throwable t) {
+            try {
+                startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void askNotif() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 0x7B);
+            } else {
+                Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
+                i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
+                startActivity(i);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private boolean storageGranted() {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                return Environment.isExternalStorageManager();
+            }
+            return checkSelfPermission("android.permission.WRITE_EXTERNAL_STORAGE") == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private void fillDeviceInfo() {
+        try {
+            android.util.DisplayMetrics dm = getResources().getDisplayMetrics();
+            if (rowResVal != null) rowResVal.setText(dm.widthPixels + "×" + dm.heightPixels + "  ·  " + dm.densityDpi + "dpi");
+            if (rowGameVerVal != null) {
+                String gv = "未安装";
+                try {
+                    gv = getPackageManager().getPackageInfo(PKG, 0).versionName;
+                } catch (Throwable ignored) {
+                }
+                rowGameVerVal.setText(gv);
+            }
+            String vn = "?";
+            long vc = 0;
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            vn = pi.versionName == null ? "?" : pi.versionName;
+            vc = android.os.Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+            if (rowVerVal != null) rowVerVal.setText(vn + " (" + vc + ")");
+        } catch (Throwable ignored) {
+        }
     }
 
     private TextView value(int unused, String text) {
@@ -594,6 +889,7 @@ public class MainActivity extends Activity {
     }
 
     private void log(final String s) {
+        android.util.Log.i("HSK", s);
         runOnUiThread(new Runnable() {
             public void run() {
                 tvLog.append(s + "\n");
@@ -633,6 +929,34 @@ public class MainActivity extends Activity {
             rowShzkVal.setText(!alive ? "未连接" : (granted ? "已授权" : "待授权"));
             rowShzkVal.setTextColor(!alive ? noColor : (granted ? okColor : grayColor));
         }
+        if (rowSvcVal != null) {
+            String svc;
+            int sc;
+            if (hasRoot) { svc = "Root 已授权"; sc = okColor; }
+            else if (granted) { svc = "Shizuku 已授权"; sc = okColor; }
+            else { svc = "未授权"; sc = noColor; }
+            rowSvcVal.setText(svc);
+            rowSvcVal.setTextColor(sc);
+            if (rowModeVal != null) {
+                rowModeVal.setText(hasRoot ? "Root 直接读写" : (granted ? "免 root（Shizuku）" : "未授权，无法读写游戏目录"));
+                rowModeVal.setTextColor(granted || hasRoot ? okColor : noColor);
+            }
+        }
+        if (rowBatteryVal != null) {
+            boolean bi = batteryIgnored();
+            rowBatteryVal.setText(bi ? "已加白名单" : "点此去设置");
+            rowBatteryVal.setTextColor(bi ? okColor : grayColor);
+        }
+        if (rowNotifVal != null) {
+            boolean nf = notifGranted();
+            rowNotifVal.setText(nf ? "已开启" : "点此开启");
+            rowNotifVal.setTextColor(nf ? okColor : grayColor);
+        }
+        if (rowStoreVal != null) {
+            boolean sg = storageGranted();
+            rowStoreVal.setText(sg ? "已授权" : "点此授权");
+            rowStoreVal.setTextColor(sg ? okColor : grayColor);
+        }
         if (rowPermVal != null) {
             rowPermVal.setText(!alive ? "未连接" : (granted ? "已授权" : "点此授权"));
             rowPermVal.setTextColor(!alive ? noColor : (granted ? okColor : grayColor));
@@ -641,6 +965,12 @@ public class MainActivity extends Activity {
         if (tvState != null) {
             Account a = selected();
             tvState.setText(a == null ? "已选：无" : "已选：" + a.name + "  ·  " + a.fp());
+        }
+        if (adapter != null) adapter.notifyDataSetChanged();
+        if (rowSelVal != null) {
+            Account a = selected();
+            rowSelVal.setText(a == null ? "未选择" : a.name + "  ·  " + a.fp());
+            rowSelVal.setTextColor(a == null ? grayColor : okColor);
         }
     }
 
@@ -1027,11 +1357,6 @@ public class MainActivity extends Activity {
     }
 
     private void refreshList() {
-        adapter.clear();
-        for (int i = 0; i < accounts.size(); i++) {
-            Account a = accounts.get(i);
-            adapter.add((i + 1) + ". " + a.name + "\n    " + a.fp() + "  ·  " + a.created + (a.note.length() > 0 ? "\n    " + a.note : ""));
-        }
         adapter.notifyDataSetChanged();
         updateState();
     }
@@ -1114,6 +1439,68 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    /** 用 MediaStore 查 Download/东放Key/<名字>/AuthKey.txt 是否已存在。 */
+    private boolean exportedExists(String name) {
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            android.database.Cursor c = null;
+            try {
+                android.net.Uri uri = android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                String[] proj = new String[]{android.provider.MediaStore.Downloads._ID};
+                String sel = android.provider.MediaStore.Downloads.RELATIVE_PATH + " LIKE ? AND "
+                        + android.provider.MediaStore.Downloads.DISPLAY_NAME + " = ?";
+                String[] args = new String[]{"Download/东放Key/" + safeName(name) + "/%", "AuthKey.txt"};
+                c = getContentResolver().query(uri, proj, sel, args, null);
+                if (c != null && c.getCount() > 0) return true;
+            } catch (Throwable ignored) {
+            } finally {
+                if (c != null) try { c.close(); } catch (Throwable ignored) {}
+            }
+        }
+        try {
+            File f = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                    "东放Key/" + safeName(name) + "/AuthKey.txt");
+            return f.exists();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 老版本存的账号没有 folder 记录，启动时补导一次，列表里才能显示真实路径。 */
+    private void autoExportMissing() {
+        try {
+            autoExportMissingInner();
+        } catch (Throwable t) {
+            log("[导出] 自动补导出失败：" + t);
+        }
+    }
+
+    private void autoExportMissingInner() {
+        boolean changed = false;
+        for (int i = 0; i < accounts.size(); i++) {
+            Account a = accounts.get(i);
+            if (a.folder == null || a.folder.length() == 0) {
+                if (exportedExists(a.name)) {
+                    a.folder = "/storage/emulated/0/Download/东放Key/" + safeName(a.name) + "/AuthKey.txt";
+                    changed = true;
+                    continue;
+                }
+                String out = exportKeyFolder(a.name, a.key);
+                if (out != null) {
+                    a.folder = out;
+                    changed = true;
+                }
+            }
+        }
+        if (!changed) return;
+        saveVault();
+        runOnUiThread(new Runnable() {
+            public void run() {
+                refreshList();
+                log("[导出] 已把缺路径的 key 补导出到 Download/东放Key/");
+            }
+        });
+    }
+
     private void addAccount(String name, String key, String source) {
         Account a = new Account(name, key);
         a.note = "来源：" + source;
@@ -1125,6 +1512,9 @@ public class MainActivity extends Activity {
         log("[成功] 已加入账号库：" + a.name + " (" + a.fp() + ")");
         String out = exportKeyFolder(name, key);
         if (out != null) {
+            a.folder = out;
+            saveVault();
+            refreshList();
             log("[导出] " + out);
             toast("已保存并导出");
         } else {
@@ -1133,8 +1523,8 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 把 key 原样写进 Download/东放Key/<名字>/AuthKey.txt，返回可读路径或 null。 */
-    private String exportKeyFolder(String name, String key) {
+    /** 账号名 -> 合法文件夹名（过滤非法字符、限长）。 */
+    static String safeName(String name) {
         StringBuilder nb = new StringBuilder();
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
@@ -1144,7 +1534,196 @@ public class MainActivity extends Activity {
         String safe = nb.toString().trim();
         if (safe.length() == 0) safe = "账号";
         if (safe.length() > 40) safe = safe.substring(0, 40);
+        return safe;
+    }
+
+    /** 预期导出路径，用于列表展示。 */
+    static String expectedPath(String name) {
+        return "Download/东放Key/" + safeName(name) + "/AuthKey.txt";
+    }
+
+    /** 把 key 原样写进 Download/东放Key/<名字>/AuthKey.txt，返回可读路径或 null。 */
+    private void checkUpdate(final boolean manual) {
+        if (manual && rowUpdateVal != null) rowUpdateVal.setText("检查中…");
+        new Thread(new Runnable() {
+            public void run() {
+                String tag = null;
+                String url = null;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
+                            "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest").openConnection();
+                    c.setConnectTimeout(8000);
+                    c.setReadTimeout(8000);
+                    c.setRequestProperty("Accept", "application/vnd.github+json");
+                    c.setRequestProperty("User-Agent", "HousamoAuthKeyManager");
+                    java.io.InputStream in = c.getInputStream();
+                    java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[4096];
+                    int n;
+                    while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+                    in.close();
+                    String body = new String(bo.toByteArray(), "UTF-8");
+                    java.util.regex.Matcher m1 = java.util.regex.Pattern.compile("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+                    if (m1.find()) tag = m1.group(1);
+                    java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
+                    if (m2.find()) url = m2.group(1);
+                } catch (Throwable t) {
+                    if (manual) {
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                if (rowUpdateVal != null) rowUpdateVal.setText("检查失败（网络）");
+                            }
+                        });
+                        log("[更新] 检查失败：" + t);
+                    }
+                    return;
+                }
+                final String ver = tag == null ? "" : tag.replace("v", "");
+                final String rel = url == null ? "https://github.com/fenghuo6183/HousamoAuthKeyManager/releases" : url;
+                final int cmp = ver.length() == 0 ? 0 : compareVer(ver, "1.0.5");
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (rowUpdateVal != null) {
+                            rowUpdateVal.setText(cmp > 0 ? "发现 " + ver + "，点此下载" : "已是最新版 1.0.5");
+                            rowUpdateVal.setTextColor(cmp > 0 ? Color.parseColor("#2F6BFF") : Color.parseColor("#9AA3B0"));
+                        }
+                        if (cmp > 0) {
+                            log("[更新] 发现新版本 " + ver + "，点「检查更新」下载");
+                            toast("发现新版本 " + ver);
+                            if (rowUpdateVal != null) {
+                                rowUpdateVal.setOnClickListener(new View.OnClickListener() {
+                                    public void onClick(View v) { openUrl(rel); }
+                                });
+                            }
+                        } else {
+                            if (rowUpdateVal != null) rowUpdateVal.setOnClickListener(new View.OnClickListener() {
+                                public void onClick(View v) { openUrl(rel); }
+                            });
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private static int compareVer(String a, String b) {
+        String[] x = a.split("\\.");
+        String[] y = b.split("\\.");
+        for (int i = 0; i < Math.max(x.length, y.length); i++) {
+            int xi = i < x.length ? parseIntSafe(x[i]) : 0;
+            int yi = i < y.length ? parseIntSafe(y[i]) : 0;
+            if (xi != yi) return xi > yi ? 1 : -1;
+        }
+        return 0;
+    }
+
+    private static int parseIntSafe(String s) {
+        try {
+            return Integer.parseInt(s.replaceAll("[^0-9]", ""));
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    private String exportRootLabel() {
+        String l = getPreferences(MODE_PRIVATE).getString("exportRootLabel", "");
+        return l.length() == 0 ? "Download/东放Key/" : l;
+    }
+
+    private android.net.Uri exportRootUri() {
+        String u = getPreferences(MODE_PRIVATE).getString("exportRoot", "");
+        return u.length() == 0 ? null : android.net.Uri.parse(u);
+    }
+
+    private void chooseExportDir() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, REQ_TREE);
+        } catch (Throwable t) {
+            toast("无法打开文件夹选择器");
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int req, int res, Intent data) {
+        super.onActivityResult(req, res, data);
+        if (req != REQ_TREE || res != RESULT_OK || data == null || data.getData() == null) return;
+        android.net.Uri uri = data.getData();
+        try {
+            getContentResolver().takePersistableUriPermission(uri,
+                    Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+        } catch (Throwable ignored) {
+        }
+        String label = uri.getLastPathSegment();
+        if (label == null) label = uri.toString();
+        int c = label.indexOf(':');
+        if (c >= 0) label = label.substring(c + 1);
+        getPreferences(MODE_PRIVATE).edit().putString("exportRoot", uri.toString()).putString("exportRootLabel", label).apply();
+        if (rowExportVal != null) rowExportVal.setText(label);
+        if (rowSaved != null) rowSaved.setText(label + "/");
+        log("[导出] 位置已改为：" + label);
+        toast("导出位置已更新");
+    }
+
+    private String exportToTree(android.net.Uri tree, String safe, byte[] data) {
+        try {
+            String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            android.net.Uri rootDoc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, treeId);
+            android.net.Uri sub = findChild(rootDoc, safe);
+            if (sub == null) {
+                sub = android.provider.DocumentsContract.createDocument(getContentResolver(), rootDoc, "vnd.android.document/directory", safe);
+            }
+            if (sub == null) return null;
+            android.net.Uri old = findChild(sub, "AuthKey.txt");
+            if (old != null) {
+                try {
+                    getContentResolver().delete(old, null, null);
+                } catch (Throwable ignored) {
+                }
+            }
+            android.net.Uri f = android.provider.DocumentsContract.createDocument(getContentResolver(), sub, "text/plain", "AuthKey.txt");
+            if (f == null) return null;
+            OutputStream os = getContentResolver().openOutputStream(f);
+            os.write(data);
+            os.flush();
+            os.close();
+            return f.toString();
+        } catch (Throwable t) {
+            log("[导出] 自定义目录写入失败：" + t);
+            return null;
+        }
+    }
+
+    private android.net.Uri findChild(android.net.Uri parent, String name) {
+        android.database.Cursor c = null;
+        try {
+            android.net.Uri children = android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(
+                    parent, android.provider.DocumentsContract.getDocumentId(parent));
+            c = getContentResolver().query(children, new String[]{
+                    android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME}, null, null, null);
+            while (c != null && c.moveToNext()) {
+                if (name.equals(c.getString(1))) {
+                    return android.provider.DocumentsContract.buildDocumentUriUsingTree(parent, c.getString(0));
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        return null;
+    }
+
+    private String exportKeyFolder(String name, String key) {
+        String safe = safeName(name);
         byte[] data = key.getBytes();
+        android.net.Uri tree = exportRootUri();
+        if (tree != null) {
+            String t = exportToTree(tree, safe, data);
+            if (t != null) return exportRootLabel() + "/" + safe + "/AuthKey.txt";
+        }
         String rel = Environment.DIRECTORY_DOWNLOADS + "/东放Key/" + safe;
         // 1) 直接写（Android 10 及以下，或已授予「所有文件访问」）
         try {
@@ -1221,6 +1800,9 @@ public class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (out != null) {
+                            a.folder = out;
+                            saveVault();
+                            refreshList();
                             log("[导出] " + out);
                             toast("已导出");
                         } else {
