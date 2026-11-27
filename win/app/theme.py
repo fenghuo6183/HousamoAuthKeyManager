@@ -5,7 +5,7 @@ from __future__ import annotations
 
 APP_NAME = "东放 AuthKey 管家"
 APP_SUBTITLE = "Housamo AuthKey Manager"
-APP_VERSION = "1.0-win"
+APP_VERSION = "1.0.20"
 REPO_URL = "https://github.com/fenghuo6183/HousamoAuthKeyManager"
 
 FONT_FAMILY = "Microsoft YaHei UI"
@@ -46,9 +46,71 @@ PALETTE = {
     "log_ok": "#7FE0A8",
     "log_hint": "#FFD08A",
     "shadow": "#0F172A",
+    "btn_hover": "#DCE7FF",      # ghost button hover / press
+    "btn_press": "#C9D9FF",
+    "soft_hover": "#D8E4FF",     # soft (tinted) button hover / press
+    "soft_press": "#C9D9FF",
+    "danger_hover": "#F8DBD8",
+    "danger_press": "#F1C8C4",
+    "head_hover": "#EAEFF9",     # tree heading hover
+    "scroll_hover": "#AEBBD2",
+    "glyph_off": "#E8EDF6",      # disabled button fill
+    "glyph_off_line": "#ACB7C9",
 }
 
 LIGHT = PALETTE
+
+# Dark counterpart of PALETTE. Same keys, so every widget can be rebuilt from
+# either palette without special cases.
+DARK = {
+    "window": "#0F1420",
+    "wall_top": "#131B2C",
+    "wall_bottom": "#0A0E17",
+    "wall_glow": "#22304F",
+    "rail": "#151B28",
+    "rail_hover": "#1E2637",
+    "card": "#1A2130",
+    "card_soft": "#222B3C",
+    "card_sunken": "#1F2634",
+    "border": "#2E3850",
+    "border_soft": "#252D3E",
+    "text": "#E9F0FB",
+    "text_muted": "#9AA7BE",
+    "text_faint": "#77849A",
+    "accent": "#4C86FF",
+    "accent_hover": "#6A9BFF",
+    "accent_press": "#3B70D8",
+    "accent_soft": "#243453",
+    "on_accent": "#FFFFFF",
+    "ok": "#3FD08A",
+    "ok_soft": "#173627",
+    "warn": "#E5AC4E",
+    "warn_soft": "#3A2C12",
+    "err": "#FF7A70",
+    "err_soft": "#3B1F1C",
+    "log_bg": "#0B0F18",
+    "log_fg": "#C6D2E6",
+    "log_dim": "#7C8AA0",
+    "log_err": "#FF9A93",
+    "log_ok": "#7FE0A8",
+    "log_hint": "#FFD08A",
+    "shadow": "#000000",
+    "btn_hover": "#2A3A55"
+    "btn_press": "#31405C",
+    "soft_hover": "#2C3D5E",
+    "soft_press": "#34496E",
+    "danger_hover": "#4A2621",
+    "danger_press": "#552D27",
+    "head_hover": "#28334A",
+    "scroll_hover": "#3A4763",
+    "glyph_off": "#2A3345",
+    "glyph_off_line": "#4A5673",
+}
+
+
+def palette(name=None):
+    """Palette by name ("dark"/"light"); unknown names fall back to light."""
+    return DARK if name == "dark" else LIGHT
 
 # Pixel scale of the running window (1.0 at 96 dpi, 1.5 at 150%, ...).
 # The layout is authored in 96-dpi pixels; every measurement goes through
