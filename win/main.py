@@ -99,14 +99,20 @@ def main():
         root = tk.Tk()
         root.withdraw()
         _tune_scaling(root)
-        App(root)
+        app = App(root)
+        if getattr(app, "locked_out", False):
+            root.destroy()
+            return
         root.update()
         root.destroy()
         print("SELFTEST OK")
         return
     root = tk.Tk()
     _tune_scaling(root)
-    App(root)
+    app = App(root)
+    if getattr(app, "locked_out", False):
+        root.destroy()
+        return
     root.mainloop()
 
 
