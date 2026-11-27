@@ -53,14 +53,51 @@ import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
 
-    static final String PKG = "jp.co.lifewonders.housamo";
-    static final String EXT_DIR = "/sdcard/Android/data/" + PKG + "/files/Data";
-    static final String EXT_KEY = EXT_DIR + "/AuthKey";
-    static final String PREFS1 = "/data/data/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
-    static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
+    /** 一个受支持的游戏：包名 + key 文件在外部数据目录里的位置。 */
+    static class Game {
+        final String id, label, pkg, sub, file;
+
+        Game(String id, String label, String pkg, String sub, String file) {
+            this.id = id;
+            this.label = label;
+            this.pkg = pkg;
+            this.sub = sub;
+            this.file = file;
+        }
+
+        String extDir() {
+            return "/sdcard/Android/data/" + pkg + "/" + sub;
+        }
+
+        String extKey() {
+            return extDir() + "/" + file;
+        }
+
+        /** 导出 / 备份目录里这个游戏用的子文件夹（东放沿用老路径，不加子目录）。 */
+        String exportSub() {
+            return "housamo".equals(id) ? "" : label;
+        }
+    }
+
+    static final Game GAME_HOUSAMO = new Game("housamo", "东京放课后", "jp.co.lifewonders.housamo", "files/Data", "AuthKey");
+    static final Game GAME_LIVEHERO = new Game("liveahero", "LiveAHero", "jp.co.lifewonders.liveahero", "files/datas", "userKey");
+    static final Game[] GAMES = new Game[]{GAME_HOUSAMO, GAME_LIVEHERO};
+
+    /** 当前游戏；切换时下面这组路径会被重写，其余代码不用动。 */
+    static Game game = GAME_HOUSAMO;
+    static String PKG = GAME_HOUSAMO.pkg;
+    static String EXT_DIR = GAME_HOUSAMO.extDir();
+    static String EXT_KEY = GAME_HOUSAMO.extKey();
+    static String PREFS1 = "/data/data/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
+    static String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
+
+    static Game gameById(String id) {
+        for (Game g : GAMES) if (g.id.equals(id)) return g;
+        return GAME_HOUSAMO;
+    }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.12";
+    static final String CURRENT_VER = "1.0.13";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -90,6 +127,12 @@ public class MainActivity extends Activity {
     private TextView emptyHint, tvAccHint;
     /** 游戏里当前正在用的 key 指纹（后台读，用来在卡片上标「游戏在用」）。 */
     private String curFp = null;
+    /** 游戏里当前 key 的原文（启动核对要用）。 */
+    private String curKey = null;
+    /** 用户在核对卡片上点过「不用管」的那个指纹，不再重复打扰。 */
+    private String bannerDismissedFp = null;
+    private LinearLayout bannerBox = null;
+    private final java.util.List<Button> gameButtons = new java.util.ArrayList<Button>();
     private Account pendingImport = null;
     private boolean curFpBusy = false;
     private boolean curFpLoaded = false;
@@ -110,6 +153,8 @@ public class MainActivity extends Activity {
         String created = "";
         String folder = "";
         String kind = "account";
+        /** 属于哪个游戏（housamo / liveahero）；空 = 老数据，算作东京放课后。 */
+        String game = "housamo";
 
         Account() {
         }
@@ -146,6 +191,7 @@ public class MainActivity extends Activity {
             o.put("created", created);
             o.put("folder", folder);
             o.put("kind", kind);
+            o.put("game", game);
             return o;
         }
 
@@ -157,6 +203,8 @@ public class MainActivity extends Activity {
             a.created = o.optString("created", "");
             a.folder = o.optString("folder", "");
             a.kind = o.optString("kind", "");
+            a.game = o.optString("game", "housamo");
+            if (a.game == null || a.game.length() == 0) a.game = "housamo";
             if (a.kind.length() == 0) a.kind = a.name.startsWith("导入前备份") ? "backup" : "account";
             return a;
         }
@@ -178,11 +226,23 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** 切换当前游戏：把静态路径全部指到这个游戏上。 */
+    private void applyGame(Game g) {
+        if (g == null) g = GAME_HOUSAMO;
+        game = g;
+        PKG = g.pkg;
+        EXT_DIR = g.extDir();
+        EXT_KEY = g.extKey();
+        PREFS1 = "/data/data/" + g.pkg + "/shared_prefs/" + g.pkg + ".v2.playerprefs.xml";
+        PREFS2 = "/data/user/0/" + g.pkg + "/shared_prefs/" + g.pkg + ".v2.playerprefs.xml";
+    }
+
     // ---------- 生命周期 ----------
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        applyGame(gameById(getPreferences(MODE_PRIVATE).getString("gameId", "housamo")));
         setContentView(buildUi());
         loadVault();
         refreshList();
@@ -468,6 +528,12 @@ public class MainActivity extends Activity {
         sub.setTextColor(Color.parseColor("#9AA3B0"));
         sub.setPadding(dp(2), 0, 0, dp(8));
         p.addView(sub);
+        p.addView(gameSwitcherCard(true), cardParams(0));
+
+        bannerBox = new LinearLayout(this);
+        bannerBox.setOrientation(LinearLayout.VERTICAL);
+        bannerBox.setVisibility(android.view.View.GONE);
+        p.addView(bannerBox);
 
         LinearLayout cur = card();
         rowSelVal = value(0, "未选择");
@@ -550,6 +616,7 @@ public class MainActivity extends Activity {
         tvState.setTextColor(Color.parseColor("#8A93A0"));
         tvState.setPadding(dp(2), 0, 0, dp(8));
         p.addView(tvState);
+        p.addView(gameSwitcherCard(false), cardParams(0));
 
         LinearLayout seg = new LinearLayout(this);
         seg.setOrientation(LinearLayout.HORIZONTAL);
@@ -1105,7 +1172,7 @@ public class MainActivity extends Activity {
             rowRootVal.setTextColor(!rootChecked ? grayColor : (hasRoot ? okColor : noColor));
         }
         if (rowGameVal != null) {
-            rowGameVal.setText(gameInstalled ? "已检测到" : "未检测到");
+            rowGameVal.setText(game.label + (gameInstalled ? " · 已安装" : " · 未安装"));
             rowGameVal.setTextColor(gameInstalled ? okColor : noColor);
         }
         if (rowShzkVal != null) {
@@ -1150,6 +1217,7 @@ public class MainActivity extends Activity {
             tvState.setText(a == null ? "已选：无" : "已选：" + a.name + "  ·  " + a.fp());
         }
         refreshAccountsView();
+        styleGameBtns();
         if (rowSelVal != null) {
             Account a = selected();
             rowSelVal.setText(a == null ? "未选择" : a.name + "  ·  " + a.fp());
@@ -1566,9 +1634,16 @@ public class MainActivity extends Activity {
         if (i >= 0) list.setItemChecked(i, true);
     }
 
+    /** 这条记录是不是属于当前游戏。 */
+    private boolean inGame(Account a) {
+        if (a == null) return false;
+        String g = (a.game == null || a.game.length() == 0) ? "housamo" : a.game;
+        return g.equals(game.id);
+    }
+
     private int countAccounts() {
         int n = 0;
-        for (Account a : accounts) if (!a.isBackup()) n++;
+        for (Account a : accounts) if (!a.isBackup() && inGame(a)) n++;
         return n;
     }
 
@@ -1583,7 +1658,7 @@ public class MainActivity extends Activity {
 
     private int countBackups() {
         int n = 0;
-        for (Account a : accounts) if (a.isBackup()) n++;
+        for (Account a : accounts) if (a.isBackup() && inGame(a)) n++;
         return n;
     }
 
@@ -1604,6 +1679,7 @@ public class MainActivity extends Activity {
         // 新的排前面：账号库是按时间追加的，倒序显示更符合直觉
         for (int i = accounts.size() - 1; i >= 0; i--) {
             Account a = accounts.get(i);
+            if (!inGame(a)) continue;
             if (a.isBackup() == (accTab == 1)) accView.add(a);
         }
         if (accTab == 1) {
@@ -1750,9 +1826,10 @@ public class MainActivity extends Activity {
         boolean changed = false;
         for (int i = 0; i < accounts.size(); i++) {
             Account a = accounts.get(i);
+            if (!inGame(a)) continue;
             if (a.folder == null || a.folder.length() == 0) {
                 if (exportedExists(a.name)) {
-                    a.folder = "/storage/emulated/0/Download/东放Key/" + safeName(a.name) + "/AuthKey.txt";
+                    a.folder = "/storage/emulated/0/" + exportRelPrefix() + safeName(a.name) + "/AuthKey.txt";
                     changed = true;
                     continue;
                 }
@@ -1775,6 +1852,7 @@ public class MainActivity extends Activity {
 
     private void addAccount(String name, String key, String source) {
         Account a = new Account(name, key);
+        a.game = game.id;
         a.note = "来源：" + source;
         accounts.add(a);
         saveVault();
@@ -2002,6 +2080,9 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 每次回到 App 核对一次：游戏里的 key 变了吗
+        if (list != null) curFpLoaded = false;
+        refreshCurrentFp();
         if (pendingApk != null && (Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls())) {
             File f = pendingApk;
             pendingApk = null;
@@ -2140,15 +2221,15 @@ public class MainActivity extends Activity {
     private String exportKeyFolder(String name, String key) {
         String safe = safeName(name);
         byte[] data = key.getBytes();
-        android.net.Uri tree = exportRootUri();
+        android.net.Uri tree = exportTreeForGame();
         if (tree != null) {
             String t = exportToTree(tree, safe, data);
-            if (t != null) return exportRootLabel() + "/" + safe + "/AuthKey.txt";
+            if (t != null) return exportRootLabelFull() + safe + "/AuthKey.txt";
         }
-        String rel = Environment.DIRECTORY_DOWNLOADS + "/东放Key/" + safe;
+        String rel = exportRelPrefix() + safe;
         // 1) 直接写（Android 10 及以下，或已授予「所有文件访问」）
         try {
-            File dir = new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "东放Key/" + safe);
+            File dir = new File(exportRootGameDir(), safe);
             if (dir.exists() || dir.mkdirs()) {
                 File f = new File(dir, "AuthKey.txt");
                 FileOutputStream fo = new FileOutputStream(f);
@@ -2191,8 +2272,8 @@ public class MainActivity extends Activity {
         }
         // 3) shell 兜底（root / Shizuku）
         if (hasShell()) {
-            Res r = shWithInput("mkdir -p '/sdcard/Download/东放Key/" + safe + "' && cat > '/sdcard/Download/东放Key/"
-                    + safe + "/AuthKey.txt'", data, 20000);
+            String sdir = exportRootShellDir() + "/" + safe;
+            Res r = shWithInput("mkdir -p '" + sdir + "' && cat > '" + sdir + "/AuthKey.txt'", data, 20000);
             if (r.code == 0) return rel + "/AuthKey.txt";
         }
         return null;
@@ -2250,7 +2331,7 @@ public class MainActivity extends Activity {
     private boolean isDup(Account a) {
         if (a.key == null || a.key.length() <= 20) return false;
         for (Account b : accounts) {
-            if (b != a && a.key.equals(b.key)) return true;
+            if (b != a && inGame(b) && a.key.equals(b.key)) return true;
         }
         return false;
     }
@@ -2280,9 +2361,11 @@ public class MainActivity extends Activity {
     private void refreshCurrentFp() {
         if (curFpBusy) return;
         curFpBusy = true;
+        final String forGame = game.id;
         pool.execute(new Runnable() {
             public void run() {
                 String fp = null;
+                String key = null;
                 try {
                     String k = null;
                     byte[] d = readKeyAt(EXT_KEY);
@@ -2291,16 +2374,23 @@ public class MainActivity extends Activity {
                         byte[] x = readKeyAt(PREFS1);
                         if (x != null) k = extractFromPrefs(new String(x));
                     }
-                    if (k != null && k.trim().length() > 20) fp = hash(k.trim()).substring(0, 16);
+                    if (k != null && k.trim().length() > 20) {
+                        key = k.trim();
+                        fp = hash(key).substring(0, 16);
+                    }
                 } catch (Throwable ignored) {
                 }
                 final String f = fp;
+                final String kk = key;
                 runOnUiThread(new Runnable() {
                     public void run() {
                         curFpBusy = false;
                         curFpLoaded = true;
+                        if (!forGame.equals(game.id)) return;
                         curFp = f;
+                        curKey = kk;
                         refreshAccountsView();
+                        refreshKeyCheckBanner();
                         if (pendingImport != null && selected() == pendingImport) {
                             pendingImport = null;
                             doImport();
@@ -2309,6 +2399,158 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    private boolean gameInstalled(Game g) {
+        try {
+            getPackageManager().getPackageInfo(g.pkg, 0);
+            return true;
+        } catch (Throwable ignored) {
+        }
+        return new File("/sdcard/Android/data/" + g.pkg).exists();
+    }
+
+    /** 游戏里的 key 不在账号库里 → 在任务页顶部提示一次（只提示，用户点了才存）。 */
+    private void refreshKeyCheckBanner() {
+        if (bannerBox == null) return;
+        bannerBox.removeAllViews();
+        String k = curKey == null ? "" : curKey.trim();
+        if (k.length() < 8 || curFp == null) {
+            bannerBox.setVisibility(android.view.View.GONE);
+            return;
+        }
+        Account latest = null;
+        boolean known = false;
+        for (int i = accounts.size() - 1; i >= 0; i--) {
+            Account a = accounts.get(i);
+            if (!inGame(a)) continue;
+            if (latest == null && !a.isBackup()) latest = a;
+            if (a.key != null && a.key.trim().equals(k)) {
+                known = true;
+                break;
+            }
+        }
+        if (known || curFp.equals(bannerDismissedFp)) {
+            bannerBox.setVisibility(android.view.View.GONE);
+            return;
+        }
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackground(roundRect(Color.parseColor("#FFF8E6"), 16, Color.parseColor("#F0D9A8"), 1));
+        c.setPadding(dp(14), dp(12), dp(14), dp(12));
+        TextView t = new TextView(this);
+        t.setText("游戏里的 key 和账号库对不上");
+        t.setTextSize(15);
+        t.setTextColor(Color.parseColor("#8A6D1F"));
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        c.addView(t);
+        TextView d = new TextView(this);
+        String msg = "「" + game.label + "」现在用的指纹是 " + curFp + "，账号库里没有这个 key。";
+        if (latest != null) msg += "\n库里最新的是「" + latest.name + "」（" + latest.fpShort() + "）。";
+        msg += "\n想留一份，就点「存到账号库」。";
+        d.setText(msg);
+        d.setTextSize(12);
+        d.setTextColor(Color.parseColor("#7A6633"));
+        d.setPadding(0, dp(4), 0, dp(8));
+        c.addView(d);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        Button save = mkBtn("存到账号库", true);
+        save.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { saveCurKeyAsSnapshot(); }
+        });
+        Button skip = mkBtn("不用管", false);
+        skip.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                bannerDismissedFp = curFp;
+                refreshKeyCheckBanner();
+            }
+        });
+        row.addView(save, new LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lp.setMargins(dp(8), 0, 0, 0);
+        row.addView(skip, lp);
+        c.addView(row);
+        bannerBox.addView(c);
+        bannerBox.setVisibility(android.view.View.VISIBLE);
+    }
+
+    private void saveCurKeyAsSnapshot() {
+        String k = curKey == null ? "" : curKey.trim();
+        if (k.length() < 8) {
+            toast("还没读到游戏里的 key");
+            return;
+        }
+        addAccount("游戏内快照 " + stamp(), k, "启动核对：游戏里的 key 不在账号库");
+        bannerDismissedFp = curFp;
+        refreshKeyCheckBanner();
+        log("[快照] 已把「" + game.label + "」当前的 key 存进账号库（指纹 " + curFp + "）");
+    }
+
+    /** 两个游戏的分段按钮（任务页与账号页各一张）。 */
+    private LinearLayout gameSwitcherCard(boolean withHint) {
+        LinearLayout c = card();
+        TextView t = new TextView(this);
+        t.setText("游戏");
+        t.setTextSize(14);
+        t.setTextColor(Color.parseColor("#1B1F24"));
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        c.addView(t);
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(8), 0, 0);
+        for (int i = 0; i < GAMES.length; i++) {
+            final Game g = GAMES[i];
+            Button b = mkBtn(g.label, false);
+            b.setTag(g.id);
+            b.setOnClickListener(new View.OnClickListener() {
+                public void onClick(View v) { switchGame(g); }
+            });
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, android.view.ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i > 0) lp.setMargins(dp(8), 0, 0, 0);
+            row.addView(b, lp);
+            gameButtons.add(b);
+        }
+        c.addView(row);
+        if (withHint) {
+            TextView h = new TextView(this);
+            h.setText("两个游戏的账号、备份和导出文件夹都是分开的，切换不会影响另一边。");
+            h.setTextSize(11);
+            h.setTextColor(Color.parseColor("#9AA3B0"));
+            h.setPadding(dp(2), dp(6), 0, 0);
+            c.addView(h);
+        }
+        return c;
+    }
+
+    private void styleGameBtns() {
+        for (Button b : gameButtons) {
+            if (b == null) continue;
+            String id = String.valueOf(b.getTag());
+            styleSeg(b, game.id.equals(id));
+            boolean inst = gameInstalled(gameById(id));
+            b.setAlpha(inst ? 1f : 0.55f);
+        }
+    }
+
+    private void switchGame(Game g) {
+        if (g == null || g.id.equals(game.id)) return;
+        applyGame(g);
+        getPreferences(MODE_PRIVATE).edit().putString("gameId", g.id).apply();
+        exportEntries.clear();
+        if (list != null) list.clearChoices();
+        curFp = null;
+        curKey = null;
+        curFpLoaded = false;
+        bannerDismissedFp = null;
+        log("[游戏] 已切换到 " + g.label + "（" + g.pkg + "）");
+        toast("已切换到 " + g.label);
+        refreshAccountsView();
+        updateState();
+        refreshCurrentFp();
+        syncFromExportFolderAsync();
+        fillDeviceInfo();
+        if (rowExportVal != null) rowExportVal.setText(exportRootLabelFull());
     }
 
     private void launchGame() {
@@ -2508,6 +2750,51 @@ public class MainActivity extends Activity {
         return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "东放Key");
     }
 
+    /** 当前游戏在默认导出根下的目录：东放沿用老路径，其他游戏加一层同名子目录。 */
+    private File exportRootGameDir() {
+        String sub = game.exportSub();
+        return sub.length() == 0 ? exportRootFileDefault() : new File(exportRootFileDefault(), sub);
+    }
+
+    /** 相对路径前缀（Download/东放Key[/游戏名]/）。 */
+    private String exportRelPrefix() {
+        String sub = game.exportSub();
+        return Environment.DIRECTORY_DOWNLOADS + "/东放Key/" + (sub.length() == 0 ? "" : sub + "/");
+    }
+
+    /** 展示用导出目录（带游戏子目录，末尾有 /）。 */
+    private String exportRootLabelFull() {
+        String sub = game.exportSub();
+        return sub.length() == 0 ? exportRootLabel() : exportRootLabel() + sub + "/";
+    }
+
+    /** shell 兜底用的导出目录。 */
+    private String exportRootShellDir() {
+        String sub = game.exportSub();
+        return "/sdcard/Download/东放Key" + (sub.length() == 0 ? "" : "/" + sub);
+    }
+
+    /** 自定义导出树里当前游戏用的目录：东放直接用根，其他游戏取/建同名子目录。 */
+    private android.net.Uri exportTreeForGame() {
+        android.net.Uri tree = exportRootUri();
+        if (tree == null) return null;
+        String sub = game.exportSub();
+        if (sub.length() == 0) return tree;
+        try {
+            String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            android.net.Uri rootDoc = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, treeId);
+            android.net.Uri child = findChild(rootDoc, sub);
+            if (child == null) {
+                child = android.provider.DocumentsContract.createDocument(getContentResolver(), rootDoc,
+                        "vnd.android.document/directory", sub);
+            }
+            return child == null ? tree : child;
+        } catch (Throwable t) {
+            log("[导出] 准备游戏子目录失败：" + t);
+            return tree;
+        }
+    }
+
     private static String readTextFile(File f) {
         FileInputStream in = null;
         try {
@@ -2543,7 +2830,7 @@ public class MainActivity extends Activity {
     private List<Account> scanExportRoot() {
         List<Account> out = new ArrayList<Account>();
         try {
-            File root = exportRootFileDefault();
+            File root = exportRootGameDir();
             File[] dirs = root.listFiles();
             if (dirs != null) {
                 for (File d : dirs) {
@@ -2557,6 +2844,7 @@ public class MainActivity extends Activity {
                     k = k.trim();
                     if (k.length() < 8) continue;
                     Account a = new Account(safeName(d.getName()), k);
+                    a.game = game.id;
                     a.note = "来自导出文件夹";
                     a.folder = f.getAbsolutePath();
                     out.add(a);
@@ -2565,11 +2853,11 @@ public class MainActivity extends Activity {
         } catch (Throwable t) {
             log("[账号] 读默认导出文件夹失败：" + t);
         }
-        Uri tree = exportRootUri();
+        Uri tree = exportTreeForGame();
         if (tree != null) {
             android.database.Cursor c = null;
             try {
-                String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                String treeId = android.provider.DocumentsContract.getDocumentId(tree);
                 c = getContentResolver().query(
                         android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeId),
                         new String[]{android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
@@ -2588,8 +2876,9 @@ public class MainActivity extends Activity {
                     k = k.trim();
                     if (k.length() < 8) continue;
                     Account a = new Account(safeName(nm), k);
+                    a.game = game.id;
                     a.note = "来自导出文件夹";
-                    a.folder = exportRootLabel() + "/" + nm + "/AuthKey.txt";
+                    a.folder = exportRootLabelFull() + nm + "/AuthKey.txt";
                     out.add(a);
                 }
             } catch (Throwable t) {
@@ -2608,7 +2897,7 @@ public class MainActivity extends Activity {
         for (Account f : found) {
             boolean inVault = false;
             for (Account a : accounts) {
-                if (a.key != null && a.key.trim().equals(f.key)) {
+                if (inGame(a) && a.key != null && a.key.trim().equals(f.key)) {
                     inVault = true;
                     if (a.folder == null || a.folder.length() == 0 || !a.folder.equals(f.folder)) {
                         a.folder = f.folder;
@@ -2695,7 +2984,7 @@ public class MainActivity extends Activity {
         if (key == null) return null;
         String k = key.trim();
         for (Account b : accounts) {
-            if (b.isBackup() && !isExportEntry(b) && b.key != null && b.key.trim().equals(k)) return b;
+            if (b.isBackup() && inGame(b) && !isExportEntry(b) && b.key != null && b.key.trim().equals(k)) return b;
         }
         return null;
     }
@@ -2883,7 +3172,7 @@ public class MainActivity extends Activity {
                 ? (curFpLoaded ? "读不到（需要 Shizuku 或 Root 权限）" : "读取中…")
                 : curFp;
         boolean same = curFp != null && curFp.equals(a.fpShort());
-        String msg = "即将把「" + a.name + "」（指纹 " + a.fpShort() + "）写进游戏，会先强制停止游戏。\n\n"
+        String msg = "即将把「" + a.name + "」（指纹 " + a.fpShort() + "）写进「" + game.label + "」，会先强制停止这个游戏。\n\n"
                 + "游戏里现在用的：指纹 " + now + "\n\n"
                 + "导入前会自动把现在的 key 备份到「备份」分段；万一写入失败，会尝试把原 key 写回去。"
                 + (same ? "\n\n注意：这就是游戏里正在用的账号，导入后不会有任何变化。" : "");
@@ -2919,6 +3208,7 @@ public class MainActivity extends Activity {
                         if (saved == null) backupOk[0] = false;
                         final Account bak = new Account("导入前备份 " + stamp(), old);
                         bak.kind = "backup";
+                        bak.game = game.id;
                         bak.note = saved == null
                                 ? ("导入「" + a.name + "」前自动备份（文件写入失败，只存在账号库）")
                                 : ("导入「" + a.name + "」前自动备份 → " + saved);
