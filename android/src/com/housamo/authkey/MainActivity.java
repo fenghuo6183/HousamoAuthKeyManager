@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.17";
+    static final String CURRENT_VER = "1.0.18";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -113,6 +113,8 @@ public class MainActivity extends Activity {
     private static final int REQ_TREE_COPY = 0x72;
     private static final int REQ_TREE_BAK = 0x73;
     private static final int REQ_TREE_IMPORT = 0x74;
+    private static final int REQ_TREE_ZIP = 0x75;
+    private static final int REQ_QR_IMG = 0x76;
     private final java.util.List<Account> exportEntries = new java.util.ArrayList<Account>();
     private Account copyTarget = null;
     private boolean copyMove = false;
@@ -139,6 +141,10 @@ public class MainActivity extends Activity {
     private boolean curFpBusy = false;
     private boolean curFpLoaded = false;
     private int curPage = 0;
+    private TextView rowHomeFp, rowHomeBak, rowHomeCnt;
+    private TextView rowKeepVal, rowNightVal, rowLockVal, rowShotVal;
+    private boolean unlocked = false;
+    private long lastBgAt = 0L;
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean rootChecked = false;
     private boolean hasRoot = false;
@@ -346,7 +352,9 @@ public class MainActivity extends Activity {
     private View buildUi() {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#F2F3F6"));
+        root.setBackgroundColor(c("#F2F3F6"));
+        applyTheme();
+        applyShotFlag();
 
         host = new LinearLayout(this);
         host.setOrientation(LinearLayout.VERTICAL);
@@ -362,12 +370,12 @@ public class MainActivity extends Activity {
         host.addView(pageSet, full());
 
         View line = new View(this);
-        line.setBackgroundColor(Color.parseColor("#E6E9EF"));
+        line.setBackgroundColor(c("#E6E9EF"));
         root.addView(line, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
 
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.HORIZONTAL);
-        nav.setBackgroundColor(Color.WHITE);
+        nav.setBackgroundColor(c("#FFFFFF"));
         nav.setPadding(0, dp(6), 0, dp(6));
         tabHome = mkTab("首页");
         tabTask = mkTab("任务");
@@ -420,8 +428,8 @@ public class MainActivity extends Activity {
         pageTask.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
         pageAcc.setVisibility(idx == 2 ? View.VISIBLE : View.GONE);
         pageSet.setVisibility(idx == 3 ? View.VISIBLE : View.GONE);
-        int on = Color.parseColor("#2F6BFF");
-        int off = Color.parseColor("#9AA3B0");
+        int on = c("#2F6BFF");
+        int off = c("#9AA3B0");
         TextView[] tabs = new TextView[]{tabHome, tabTask, tabAcc, tabSet};
         for (int i = 0; i < tabs.length; i++) {
             if (tabs[i] == null) continue;
@@ -432,6 +440,221 @@ public class MainActivity extends Activity {
             curFpLoaded = false;
             refreshCurrentFp();
         }
+    }
+
+    // ---------- 主题（浅色 / 深色） ----------
+
+    private boolean night() {
+        return getPreferences(MODE_PRIVATE).getBoolean("night", false);
+    }
+
+    /** 所有颜色都从这里过一道，深色模式下自动换成暗色。 */
+    private int c(String hex) {
+        if (!night()) return Color.parseColor(hex);
+        String h = hex.toUpperCase(Locale.US);
+        if ("#FFFFFF".equals(h)) return Color.parseColor("#171B21");
+        if ("#F2F3F6".equals(h)) return Color.parseColor("#0E1116");
+        if ("#101418".equals(h)) return Color.parseColor("#E7ECF3");
+        if ("#2B3442".equals(h)) return Color.parseColor("#D7DEE8");
+        if ("#3B4252".equals(h)) return Color.parseColor("#CFD6E1");
+        if ("#5B6470".equals(h) || "#5B6572".equals(h)) return Color.parseColor("#AAB4C2");
+        if ("#8A93A0".equals(h) || "#9AA3B0".equals(h)) return Color.parseColor("#8B96A6");
+        if ("#EBEEF3".equals(h) || "#EBEFF5".equals(h) || "#EFF1F5".equals(h)) return Color.parseColor("#2A3038");
+        if ("#E6E9EF".equals(h) || "#DCE1E8".equals(h) || "#E7EBF2".equals(h) || "#E6EAF1".equals(h)) return Color.parseColor("#2A3038");
+        if ("#F2F4F8".equals(h) || "#F3F5F9".equals(h) || "#F5F7FB".equals(h) || "#F7F8FB".equals(h)) return Color.parseColor("#1E242C");
+        if ("#F2F6FF".equals(h) || "#EAF0FF".equals(h)) return Color.parseColor("#1B2536");
+        if ("#E8F7EF".equals(h)) return Color.parseColor("#16301F");
+        if ("#FBF3DA".equals(h)) return Color.parseColor("#2E2716");
+        if ("#8A6D1F".equals(h) || "#A3741A".equals(h)) return Color.parseColor("#E3BC63");
+        if ("#19A974".equals(h)) return Color.parseColor("#4ADE80");
+        if ("#F3B4B6".equals(h)) return Color.parseColor("#7A3B3E");
+        int v = Color.parseColor(hex);
+        int lum = (Color.red(v) * 299 + Color.green(v) * 587 + Color.blue(v) * 114) / 1000;
+        if (lum >= 225) return Color.parseColor("#1A2028");
+        if (lum >= 195) return Color.parseColor("#232A34");
+        if (lum <= 95) return Color.parseColor("#DCE3EC");
+        return v;
+    }
+
+    private boolean lockOn() {
+        return getPreferences(MODE_PRIVATE).getString("lockPin", "").length() > 0;
+    }
+
+    private boolean noShot() {
+        return getPreferences(MODE_PRIVATE).getBoolean("noShot", false);
+    }
+
+    private void applyShotFlag() {
+        try {
+            if (noShot()) {
+                getWindow().setFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                        android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            } else {
+                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_SECURE);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String pinHash(String pin) {
+        return hash("housamo-lock|" + pin + "|v1");
+    }
+
+    private void lockMenu() {
+        LinearLayout c = dlgCard();
+        final AlertDialog[] h = new AlertDialog[1];
+        if (!lockOn()) {
+            dlgTitle(c, "开启应用锁");
+            dlgSub(c, "设一个 4-6 位数字密码。之后每次打开 App（或退到后台超过 30 秒回来）都要先输密码。\n\n忘了只能重装 App。");
+            c.addView(dlgPrimary("设置密码", new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (h[0] != null) h[0].dismiss();
+                    setLockPin();
+                }
+            }));
+        } else {
+            dlgTitle(c, "应用锁已开启");
+            dlgSub(c, "要关闭或改密码，先输一次现在的密码。");
+            c.addView(dlgMenuItem("修改密码", "换一个新的数字密码", false, new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (h[0] != null) h[0].dismiss();
+                    verifyPinThen(new Runnable() { public void run() { setLockPin(); } });
+                }
+            }));
+            c.addView(dlgMenuItem("关闭应用锁", "以后打开 App 不再要密码", true, new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (h[0] != null) h[0].dismiss();
+                    verifyPinThen(new Runnable() {
+                        public void run() {
+                            getPreferences(MODE_PRIVATE).edit().remove("lockPin").apply();
+                            if (rowLockVal != null) rowLockVal.setText("未开启");
+                            toast("应用锁已关闭");
+                        }
+                    });
+                }
+            }));
+        }
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    private void setLockPin() {
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "设置数字密码");
+        dlgSub(c, "4-6 位数字。只保存在这台手机上。");
+        final EditText et = dlgInput("");
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("保存", new View.OnClickListener() {
+            public void onClick(View v) {
+                String p = et.getText().toString().trim();
+                if (p.length() < 4 || p.length() > 6) { toast("密码要 4-6 位数字"); return; }
+                getPreferences(MODE_PRIVATE).edit().putString("lockPin", pinHash(p)).apply();
+                unlocked = true;
+                if (rowLockVal != null) rowLockVal.setText("已开启");
+                if (h[0] != null) h[0].dismiss();
+                toast("应用锁已开启");
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    private void verifyPinThen(final Runnable ok) {
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "输入现在的密码");
+        final EditText et = dlgInput("");
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("确认", new View.OnClickListener() {
+            public void onClick(View v) {
+                String p = et.getText().toString().trim();
+                if (pinHash(p).equals(getPreferences(MODE_PRIVATE).getString("lockPin", ""))) {
+                    if (h[0] != null) h[0].dismiss();
+                    ok.run();
+                } else {
+                    toast("密码不对");
+                }
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    private void showLockScreen() {
+        if (unlocked || isFinishing()) return;
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "输入密码");
+        dlgSub(c, "东放 Key 管家已上锁。");
+        final EditText et = dlgInput("");
+        et.setHint("4-6 位数字");
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER | android.text.InputType.TYPE_NUMBER_VARIATION_PASSWORD);
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("解锁", new View.OnClickListener() {
+            public void onClick(View v) {
+                String p = et.getText().toString().trim();
+                if (pinHash(p).equals(getPreferences(MODE_PRIVATE).getString("lockPin", ""))) {
+                    unlocked = true;
+                    if (h[0] != null) h[0].dismiss();
+                    log("[锁] 已解锁");
+                } else {
+                    toast("密码不对");
+                    et.setText("");
+                }
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "忘了密码", new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                LinearLayout d = dlgCard();
+                dlgTitle(d, "忘了密码怎么办");
+                dlgSub(d, "密码没有后门，本地只存了它的哈希。\n\n唯一的办法是卸载重装 App。你的 key 都在 Download/东放Key/ 里，重装后账号库是空的，但可以从文件夹重新导入，不会丢号。");
+                final AlertDialog[] h2 = new AlertDialog[1];
+                d.addView(dlgPrimary("知道了", new View.OnClickListener() {
+                    public void onClick(View v) { if (h2[0] != null) h2[0].dismiss(); }
+                }));
+                h2[0] = showCard(d);
+            }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+        h[0].setCancelable(false);
+        h[0].setCanceledOnTouchOutside(false);
+    }
+
+    private void applyTheme() {
+        boolean n = night();
+        try {
+            getWindow().setStatusBarColor(c("#F2F3F6"));
+            getWindow().setNavigationBarColor(n ? c("#0E1116") : c("#FFFFFF"));
+            if (Build.VERSION.SDK_INT >= 23 && !n) {
+                getWindow().getDecorView().setSystemUiVisibility(android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+            } else if (Build.VERSION.SDK_INT >= 23) {
+                getWindow().getDecorView().setSystemUiVisibility(0);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void toggleNight() {
+        getPreferences(MODE_PRIVATE).edit().putBoolean("night", !night()).apply();
+        recreate();
     }
 
     private LinearLayout page() {
@@ -445,7 +668,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(24);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         t.setPadding(dp(2), 0, 0, dp(10));
         return t;
@@ -457,7 +680,7 @@ public class MainActivity extends Activity {
         TextView sub = new TextView(this);
         sub.setText("东放账号管家  ·  备份 / 迁移 / 多开");
         sub.setTextSize(12);
-        sub.setTextColor(Color.parseColor("#9AA3B0"));
+        sub.setTextColor(c("#9AA3B0"));
         sub.setPadding(dp(2), 0, 0, dp(8));
         p.addView(sub);
 
@@ -475,13 +698,32 @@ public class MainActivity extends Activity {
         info.addView(rowWith(rowSvcVal, "服务状态", null));
         p.addView(info, cardParams(0));
 
+        LinearLayout ov = card();
+        ov.addView(caption("账号概览"));
+        rowHomeFp = value(0, "读取中…");
+        ov.addView(rowWith(rowHomeFp, "游戏里现在用的 key", new View.OnClickListener() {
+            public void onClick(View v) {
+                curFpLoaded = false;
+                refreshCurrentFp();
+            }
+        }));
+        ov.addView(divider());
+        rowHomeBak = value(0, "—");
+        ov.addView(rowWith(rowHomeBak, "上次自动备份", null));
+        ov.addView(divider());
+        rowHomeCnt = value(0, "—");
+        ov.addView(rowWith(rowHomeCnt, "账号库", new View.OnClickListener() {
+            public void onClick(View v) { showPage(2); }
+        }));
+        p.addView(ov, cardParams(0));
+
         LinearLayout mode = card();
         rowModeVal = value(0, "检测中...");
         mode.addView(rowWith(rowModeVal, "运行模式", null));
         TextView mh = new TextView(this);
         mh.setText("免 root 时走 Shizuku shell，有 root 时优先 root。");
         mh.setTextSize(11);
-        mh.setTextColor(Color.parseColor("#9AA3B0"));
+        mh.setTextColor(c("#9AA3B0"));
         mh.setPadding(dp(2), dp(2), 0, dp(4));
         mode.addView(mh);
         p.addView(mode, cardParams(0));
@@ -514,7 +756,7 @@ public class MainActivity extends Activity {
         TextView permTip = new TextView(this);
         permTip.setText("没有 root 也没装 Shizuku？点上面「Shizuku 权限」有图文步骤；不想装任何东西，就用电脑 + USB 线，提取和导入都在 Windows 版里做。");
         permTip.setTextSize(11);
-        permTip.setTextColor(Color.parseColor("#8A93A0"));
+        permTip.setTextColor(c("#8A93A0"));
         permTip.setPadding(dp(4), 0, dp(4), dp(10));
         p.addView(permTip);
 
@@ -523,7 +765,7 @@ public class MainActivity extends Activity {
         TextView more = new TextView(this);
         more.setText("提取 / 导入 / 导出 / 运行日志 都在「任务」页");
         more.setTextSize(11);
-        more.setTextColor(Color.parseColor("#9AA3B0"));
+        more.setTextColor(c("#9AA3B0"));
         more.setPadding(dp(4), dp(8), 0, 0);
         p.addView(more);
         return p;
@@ -535,7 +777,7 @@ public class MainActivity extends Activity {
         TextView sub = new TextView(this);
         sub.setText("提取 / 复制到其他文件夹 / 日志 都在这里");
         sub.setTextSize(12);
-        sub.setTextColor(Color.parseColor("#9AA3B0"));
+        sub.setTextColor(c("#9AA3B0"));
         sub.setPadding(dp(2), 0, 0, dp(8));
         p.addView(sub);
         p.addView(gameSwitcherCard(true), cardParams(0));
@@ -558,7 +800,7 @@ public class MainActivity extends Activity {
         TextView ch = new TextView(this);
         ch.setText("点这一行去「账号」页挑一个 key，下面两个操作都针对它");
         ch.setTextSize(11);
-        ch.setTextColor(Color.parseColor("#9AA3B0"));
+        ch.setTextColor(c("#9AA3B0"));
         ch.setPadding(dp(2), dp(2), 0, dp(4));
         cur.addView(ch);
         p.addView(cur, cardParams(0));
@@ -575,12 +817,24 @@ public class MainActivity extends Activity {
             public void onClick(View v) { startImportFolder(); }
         }), cardParams(0));
 
+        p.addView(taskCard("从剪贴板导入 key", "先把 key（或整段 playerprefs xml）复制到剪贴板，点这里取出来存进账号库，不碰游戏。", new View.OnClickListener() {
+            public void onClick(View v) { importFromClipboard(); }
+        }), cardParams(0));
+
+        p.addView(taskCard("从二维码图片导入 key", "别人把 key 做成二维码发给你时，从相册或文件里选那张图，自动解出 key 存进账号库。", new View.OnClickListener() {
+            public void onClick(View v) { pickQrImage(); }
+        }), cardParams(0));
+
+        p.addView(taskCard("打包导出全部 key", "选一个文件夹，把账号库里这个游戏的 key 全打成一个 zip（含 manifest），换机备份一次带走。", new View.OnClickListener() {
+            public void onClick(View v) { startZipExport(); }
+        }), cardParams(0));
+
         LinearLayout lg = card();
         lg.addView(caption("运行日志"));
         logScroll = new ScrollView(this);
         tvLog = new TextView(this);
         tvLog.setTextSize(11);
-        tvLog.setTextColor(Color.parseColor("#5B6470"));
+        tvLog.setTextColor(c("#5B6470"));
         tvLog.setTypeface(android.graphics.Typeface.MONOSPACE);
         tvLog.setMovementMethod(new ScrollingMovementMethod());
         logScroll.addView(tvLog);
@@ -598,7 +852,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(15);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         Button b = mkBtn("开始", true);
         b.setTextSize(13);
@@ -611,7 +865,7 @@ public class MainActivity extends Activity {
         TextView d = new TextView(this);
         d.setText(desc);
         d.setTextSize(12);
-        d.setTextColor(Color.parseColor("#8A93A0"));
+        d.setTextColor(c("#8A93A0"));
         d.setPadding(dp(2), 0, dp(2), dp(4));
         c.addView(d);
         return c;
@@ -632,7 +886,7 @@ public class MainActivity extends Activity {
         p.addView(head);
         tvState = new TextView(this);
         tvState.setTextSize(12);
-        tvState.setTextColor(Color.parseColor("#8A93A0"));
+        tvState.setTextColor(c("#8A93A0"));
         tvState.setPadding(dp(2), 0, 0, dp(8));
         p.addView(tvState);
         p.addView(gameSwitcherCard(false), cardParams(0));
@@ -661,6 +915,10 @@ public class MainActivity extends Activity {
                 toast("正在扫描导出文件夹…");
                 syncFromExportFolderAsync();
             }
+        }));
+        rf.addView(divider());
+        rf.addView(rowWith(value(0, "选一个文件夹，批量加进账号库"), "从文件夹导入 key", new View.OnClickListener() {
+            public void onClick(View v) { startImportFolder(); }
         }));
         p.addView(rf, cardParams(0));
 
@@ -692,7 +950,7 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         emptyHint = new TextView(this);
         emptyHint.setTextSize(12);
-        emptyHint.setTextColor(Color.parseColor("#9AA3B0"));
+        emptyHint.setTextColor(c("#9AA3B0"));
         emptyHint.setGravity(Gravity.CENTER);
         emptyHint.setPadding(dp(24), dp(10), dp(24), dp(10));
         android.widget.FrameLayout.LayoutParams ep = new android.widget.FrameLayout.LayoutParams(
@@ -703,7 +961,7 @@ public class MainActivity extends Activity {
         LinearLayout op = card();
         tvAccHint = new TextView(this);
         tvAccHint.setTextSize(11);
-        tvAccHint.setTextColor(Color.parseColor("#9AA3B0"));
+        tvAccHint.setTextColor(c("#9AA3B0"));
         tvAccHint.setPadding(dp(2), dp(8), dp(2), dp(6));
         op.addView(tvAccHint);
         bMain = mkBtn("导入到游戏", true);
@@ -761,6 +1019,44 @@ public class MainActivity extends Activity {
         }));
         p.addView(perm, cardParams(0));
 
+        LinearLayout look = card();
+        look.addView(caption("外观"));
+        rowNightVal = value(0, night() ? "深色" : "浅色");
+        look.addView(rowWith(rowNightVal, "深色模式", new View.OnClickListener() {
+            public void onClick(View v) { toggleNight(); }
+        }));
+        TextView lh = new TextView(this);
+        lh.setText("深色模式只是换个配色，读写行为完全一样。");
+        lh.setTextSize(11);
+        lh.setTextColor(c("#9AA3B0"));
+        lh.setPadding(dp(2), dp(10), dp(2), dp(2));
+        look.addView(lh);
+        p.addView(look, cardParams(0));
+
+        LinearLayout sec = card();
+        sec.addView(caption("安全"));
+        rowLockVal = value(0, lockOn() ? "已开启" : "未开启");
+        sec.addView(rowWith(rowLockVal, "应用锁", new View.OnClickListener() {
+            public void onClick(View v) { lockMenu(); }
+        }));
+        sec.addView(divider());
+        rowShotVal = value(0, noShot() ? "已禁止" : "允许");
+        sec.addView(rowWith(rowShotVal, "防止截屏", new View.OnClickListener() {
+            public void onClick(View v) {
+                getPreferences(MODE_PRIVATE).edit().putBoolean("noShot", !noShot()).apply();
+                applyShotFlag();
+                if (rowShotVal != null) rowShotVal.setText(noShot() ? "已禁止" : "允许");
+                toast(noShot() ? "已禁止截屏和录屏" : "已允许截屏");
+            }
+        }));
+        TextView sech = new TextView(this);
+        sech.setText("应用锁是 4-6 位数字密码，忘了只能重装 App（账号文件仍在 Download，不会丢）。防止截屏打开后，系统截图和录屏都会是黑的。");
+        sech.setTextSize(11);
+        sech.setTextColor(c("#9AA3B0"));
+        sech.setPadding(dp(2), dp(10), dp(2), dp(2));
+        sec.addView(sech);
+        p.addView(sec, cardParams(0));
+
         LinearLayout exp = card();
         exp.addView(caption("存储位置"));
         rowExportVal = value(0, exportRootLabelFull());
@@ -777,10 +1073,32 @@ public class MainActivity extends Activity {
         TextView sh = new TextView(this);
         sh.setText("备份位置是每次导入前，自动把游戏里正在用的 key 存一份的地方。不换就存在 " + backupDefaultLabel() + "。");
         sh.setTextSize(11);
-        sh.setTextColor(Color.parseColor("#9AA3B0"));
+        sh.setTextColor(c("#9AA3B0"));
         sh.setPadding(dp(2), dp(10), dp(2), dp(2));
         exp.addView(sh);
         p.addView(exp, cardParams(0));
+
+        LinearLayout bh = card();
+        bh.addView(caption("备份与历史"));
+        rowKeepVal = value(0, keepLabel(backupKeep()));
+        bh.addView(rowWith(rowKeepVal, "自动备份保留", new View.OnClickListener() {
+            public void onClick(View v) { chooseBackupKeep(); }
+        }));
+        bh.addView(divider());
+        bh.addView(rowWith(value(0, "手机和电脑同一个 WiFi"), "局域网传输", new View.OnClickListener() {
+            public void onClick(View v) { showLanTransfer(); }
+        }));
+        bh.addView(divider());
+        bh.addView(rowWith(value(0, "看每一次导入前的 key"), "导入历史", new View.OnClickListener() {
+            public void onClick(View v) { showImportHistory(); }
+        }));
+        TextView bhh = new TextView(this);
+        bhh.setText("自动备份是每次导入前，把游戏里正在用的 key 存下的那一份。默认全部保留。");
+        bhh.setTextSize(11);
+        bhh.setTextColor(c("#9AA3B0"));
+        bhh.setPadding(dp(2), dp(10), dp(2), dp(2));
+        bh.addView(bhh);
+        p.addView(bh, cardParams(0));
 
         LinearLayout about = card();
         about.addView(caption("关于"));
@@ -804,7 +1122,7 @@ public class MainActivity extends Activity {
         TextView url = new TextView(this);
         url.setText("github.com/fenghuo6183/HousamoAuthKeyManager");
         url.setTextSize(11);
-        url.setTextColor(Color.parseColor("#2F6BFF"));
+        url.setTextColor(c("#2F6BFF"));
         url.setPadding(dp(2), dp(2), 0, dp(6));
         url.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
@@ -817,14 +1135,14 @@ public class MainActivity extends Activity {
         TextView note = new TextView(this);
         note.setText("仅做 AuthKey 文件的复制备份，不修改游戏数据、不联网。账号风险自负。");
         note.setTextSize(11);
-        note.setTextColor(Color.parseColor("#9AA3B0"));
+        note.setTextColor(c("#9AA3B0"));
         note.setPadding(dp(2), dp(10), 0, 0);
         about.addView(note);
         p.addView(about, cardParams(0));
 
         Button bClear = mkBtn("清空账号库", false);
-        bClear.setTextColor(Color.parseColor("#E5484D"));
-        bClear.setBackground(roundRect(Color.WHITE, 10, Color.parseColor("#F3B4B6"), 1));
+        bClear.setTextColor(c("#E5484D"));
+        bClear.setBackground(roundRect(c("#FFFFFF"), 10, c("#F3B4B6"), 1));
         bClear.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
                 LinearLayout c = dlgCard();
@@ -867,8 +1185,8 @@ public class MainActivity extends Activity {
             box.setOrientation(LinearLayout.HORIZONTAL);
             box.setGravity(Gravity.CENTER_VERTICAL);
             box.setPadding(dp(12), dp(11), dp(10), dp(11));
-            box.setBackground(roundRect(on ? Color.parseColor("#F2F6FF") : Color.WHITE,
-                    12, on ? Color.parseColor("#AFC7FF") : Color.parseColor("#EBEFF5"), 1));
+            box.setBackground(roundRect(on ? c("#F2F6FF") : c("#FFFFFF"),
+                    12, on ? c("#AFC7FF") : c("#EBEFF5"), 1));
 
             LinearLayout col = new LinearLayout(MainActivity.this);
             col.setOrientation(LinearLayout.VERTICAL);
@@ -878,7 +1196,7 @@ public class MainActivity extends Activity {
             name.setTextSize(15);
             name.setSingleLine(true);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            name.setTextColor(Color.parseColor("#101418"));
+            name.setTextColor(c("#101418"));
             name.setTypeface(null, android.graphics.Typeface.BOLD);
 
             TextView meta = new TextView(MainActivity.this);
@@ -886,7 +1204,7 @@ public class MainActivity extends Activity {
                     ? ("指纹 " + a.fpShort() + "  ·  " + a.sizeText() + "  ·  原 key 副本")
                     : ("指纹 " + a.fpShort() + "  ·  " + a.sizeText() + "  ·  " + a.created));
             meta.setTextSize(11);
-            meta.setTextColor(Color.parseColor(a.isBackup() ? "#A3741A" : "#5B6572"));
+            meta.setTextColor(c(a.isBackup() ? "#A3741A" : "#5B6572"));
             meta.setPadding(0, dp(3), 0, 0);
 
             TextView path = new TextView(MainActivity.this);
@@ -896,12 +1214,24 @@ public class MainActivity extends Activity {
             path.setTextSize(10);
             path.setSingleLine(true);
             path.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            path.setTextColor(Color.parseColor("#9AA3B0"));
+            path.setTextColor(c("#9AA3B0"));
             path.setPadding(0, dp(3), 0, 0);
 
             col.addView(name);
             col.addView(meta);
             col.addView(path);
+            String nnote = a.note == null ? "" : a.note.trim();
+            if (nnote.length() > 0 && !nnote.startsWith("来源：") && !nnote.startsWith("从文件夹导入：")
+                    && !nnote.startsWith("导入「") && !nnote.startsWith("导入到「")) {
+                TextView nt = new TextView(MainActivity.this);
+                nt.setText("备注 " + nnote);
+                nt.setTextSize(11);
+                nt.setSingleLine(true);
+                nt.setEllipsize(android.text.TextUtils.TruncateAt.END);
+                nt.setTextColor(c("#5B6572"));
+                nt.setPadding(0, dp(3), 0, 0);
+                col.addView(nt);
+            }
 
             boolean inUse = curFp != null && curFp.equals(a.fpShort());
             boolean dup = isDup(a);
@@ -946,7 +1276,7 @@ public class MainActivity extends Activity {
             dot.setGravity(Gravity.CENTER);
             dot.setTextSize(12);
             dot.setTextColor(Color.WHITE);
-            dot.setBackground(roundRect(on ? Color.parseColor("#2F6BFF") : Color.parseColor("#E6EAF1"), 20, 0, 0));
+            dot.setBackground(roundRect(on ? c("#2F6BFF") : c("#E6EAF1"), 20, 0, 0));
             LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(22), dp(22));
             dl.setMargins(dp(10), 0, 0, 0);
 
@@ -1042,7 +1372,7 @@ public class MainActivity extends Activity {
         TextView v = new TextView(this);
         v.setText(text);
         v.setTextSize(13);
-        v.setTextColor(Color.parseColor("#8A93A0"));
+        v.setTextColor(c("#8A93A0"));
         return v;
     }
 
@@ -1057,7 +1387,7 @@ public class MainActivity extends Activity {
         TextView l = new TextView(this);
         l.setText(label);
         l.setTextSize(14);
-        l.setTextColor(Color.parseColor("#1B1F24"));
+        l.setTextColor(c("#1B1F24"));
         top.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         Button b = mkBtn(btnText, true);
         b.setTextSize(12);
@@ -1081,7 +1411,7 @@ public class MainActivity extends Activity {
         TextView l = new TextView(this);
         l.setText(label);
         l.setTextSize(14);
-        l.setTextColor(Color.parseColor("#1B1F24"));
+        l.setTextColor(c("#1B1F24"));
         r.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         r.addView(val);
         if (click != null) {
@@ -1093,7 +1423,7 @@ public class MainActivity extends Activity {
 
     private View divider() {
         View v = new View(this);
-        v.setBackgroundColor(Color.parseColor("#EFF1F5"));
+        v.setBackgroundColor(c("#EFF1F5"));
         v.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
         return v;
     }
@@ -1110,7 +1440,7 @@ public class MainActivity extends Activity {
     private LinearLayout card() {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(roundRect(Color.WHITE, 16, Color.parseColor("#EBEEF3"), 1));
+        c.setBackground(roundRect(c("#FFFFFF"), 16, c("#EBEEF3"), 1));
         c.setPadding(dp(14), dp(4), dp(14), dp(8));
         return c;
     }
@@ -1127,7 +1457,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(s);
         t.setTextSize(11);
-        t.setTextColor(Color.parseColor("#9AA3B0"));
+        t.setTextColor(c("#9AA3B0"));
         t.setPadding(dp(2), dp(10), 0, dp(2));
         return t;
     }
@@ -1137,11 +1467,11 @@ public class MainActivity extends Activity {
         b.setText(text);
         b.setAllCaps(false);
         b.setTextSize(13);
-        b.setTextColor(primary ? Color.WHITE : Color.parseColor("#2B3442"));
+        b.setTextColor(primary ? Color.WHITE : c("#2B3442"));
         if (primary) {
-            b.setBackground(roundRect(Color.parseColor("#2F6BFF"), 10, 0, 0));
+            b.setBackground(roundRect(c("#2F6BFF"), 10, 0, 0));
         } else {
-            b.setBackground(roundRect(Color.WHITE, 10, Color.parseColor("#DCE1E8"), 1));
+            b.setBackground(roundRect(c("#FFFFFF"), 10, c("#DCE1E8"), 1));
         }
         b.setMinHeight(dp(42));
         b.setMinWidth(0);
@@ -1186,12 +1516,13 @@ public class MainActivity extends Activity {
     }
 
     private void updateState() {
+        refreshHomeOverview();
         boolean gameInstalled = isInstalled(PKG);
         boolean alive = shizukuAlive();
         boolean granted = alive && shizukuGrantedNow();
-        int okColor = Color.parseColor("#2F6BFF");
-        int noColor = Color.parseColor("#E5484D");
-        int grayColor = Color.parseColor("#8A93A0");
+        int okColor = c("#2F6BFF");
+        int noColor = c("#E5484D");
+        int grayColor = c("#8A93A0");
         if (rowRootVal != null) {
             rowRootVal.setText(!rootChecked ? "检测中…" : (hasRoot ? "已授权" : "未授权"));
             rowRootVal.setTextColor(!rootChecked ? grayColor : (hasRoot ? okColor : noColor));
@@ -1236,7 +1567,7 @@ public class MainActivity extends Activity {
             rowPermVal.setText(!alive ? "未连接" : (granted ? "已授权" : "点此授权"));
             rowPermVal.setTextColor(!alive ? noColor : (granted ? okColor : grayColor));
         }
-        if (rowCount != null) rowCount.setText(countAccounts() + " 个账号 · " + countBackups() + " 个备份");
+        if (rowCount != null) rowCount.setText(countAccounts() + " 个账号 · " + (countBackups() + countExportEntries()) + " 个备份");
         if (tvState != null) {
             Account a = selected();
             tvState.setText(a == null ? "已选：无" : "已选：" + a.name + "  ·  " + a.fp());
@@ -1558,13 +1889,13 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText("还差一步：读写权限");
         t.setTextSize(15);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         c.addView(t);
         TextView d = new TextView(this);
         d.setText("Android 11 以后，手机不让普通 App 直接读别的 App 的数据目录，所以要先“借”一个 shell 权限。下面两种方式任选一种，弄好之后这张卡会自动消失。");
         d.setTextSize(12);
-        d.setTextColor(Color.parseColor("#8A93A0"));
+        d.setTextColor(c("#8A93A0"));
         d.setPadding(dp(2), dp(6), dp(2), dp(2));
         c.addView(d);
         c.addView(permOption("① Shizuku（免 root，推荐）",
@@ -1594,13 +1925,13 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(13);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(null, android.graphics.Typeface.BOLD);
         box.addView(t);
         TextView d = new TextView(this);
         d.setText(desc);
         d.setTextSize(12);
-        d.setTextColor(Color.parseColor("#8A93A0"));
+        d.setTextColor(c("#8A93A0"));
         d.setPadding(0, dp(3), 0, dp(6));
         box.addView(d);
         Button b = mkBtn("怎么弄", true);
@@ -1639,7 +1970,7 @@ public class MainActivity extends Activity {
     private LinearLayout dlgCard() {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(roundRect(Color.WHITE, 20, 0, 0));
+        c.setBackground(roundRect(c("#FFFFFF"), 20, 0, 0));
         c.setPadding(dp(20), dp(20), dp(20), dp(14));
         return c;
     }
@@ -1648,7 +1979,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(17);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         c.addView(t);
     }
@@ -1657,7 +1988,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(12.5f);
-        t.setTextColor(Color.parseColor("#6B7280"));
+        t.setTextColor(c("#6B7280"));
         t.setLineSpacing(dp(4), 1.0f);
         t.setPadding(0, dp(8), 0, 0);
         c.addView(t);
@@ -1673,7 +2004,7 @@ public class MainActivity extends Activity {
         n.setGravity(Gravity.CENTER);
         n.setTextColor(Color.WHITE);
         n.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
-        n.setBackground(roundRect(Color.parseColor("#2F6BFF"), 11, 0, 0));
+        n.setBackground(roundRect(c("#2F6BFF"), 11, 0, 0));
         LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(dp(22), dp(22));
         np.rightMargin = dp(10);
         row.addView(n, np);
@@ -1682,13 +2013,13 @@ public class MainActivity extends Activity {
         TextView h = new TextView(this);
         h.setText(head);
         h.setTextSize(13.5f);
-        h.setTextColor(Color.parseColor("#101418"));
+        h.setTextColor(c("#101418"));
         h.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         col.addView(h);
         TextView b = new TextView(this);
         b.setText(body);
         b.setTextSize(12.5f);
-        b.setTextColor(Color.parseColor("#6B7280"));
+        b.setTextColor(c("#6B7280"));
         b.setLineSpacing(dp(3), 1.0f);
         b.setPadding(0, dp(3), 0, 0);
         col.addView(b);
@@ -1699,7 +2030,7 @@ public class MainActivity extends Activity {
     private View dlgOption(String title, String desc, View.OnClickListener click) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundRect(Color.parseColor("#F5F7FB"), 14, Color.parseColor("#E7EBF2"), 1));
+        box.setBackground(roundRect(c("#F5F7FB"), 14, c("#E7EBF2"), 1));
         box.setPadding(dp(14), dp(12), dp(14), dp(12));
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         bp.topMargin = dp(10);
@@ -1707,20 +2038,20 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(13.5f);
-        t.setTextColor(Color.parseColor("#101418"));
+        t.setTextColor(c("#101418"));
         t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         box.addView(t);
         TextView d = new TextView(this);
         d.setText(desc);
         d.setTextSize(12.5f);
-        d.setTextColor(Color.parseColor("#6B7280"));
+        d.setTextColor(c("#6B7280"));
         d.setLineSpacing(dp(3), 1.0f);
         d.setPadding(0, dp(4), 0, dp(8));
         box.addView(d);
         TextView go = new TextView(this);
         go.setText("怎么弄  →");
         go.setTextSize(12.5f);
-        go.setTextColor(Color.parseColor("#2F6BFF"));
+        go.setTextColor(c("#2F6BFF"));
         go.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         box.addView(go);
         box.setOnClickListener(click);
@@ -1743,7 +2074,7 @@ public class MainActivity extends Activity {
         b.setText(text);
         b.setAllCaps(false);
         b.setTextSize(13);
-        b.setTextColor(Color.parseColor(blue ? "#2F6BFF" : "#6B7280"));
+        b.setTextColor(c(blue ? "#2F6BFF" : "#6B7280"));
         b.setBackground(roundRect(Color.TRANSPARENT, 10, 0, 0));
         b.setStateListAnimator(null);
         b.setElevation(0);
@@ -1759,8 +2090,8 @@ public class MainActivity extends Activity {
         t.setText(code);
         t.setTextSize(11.5f);
         t.setTypeface(android.graphics.Typeface.MONOSPACE);
-        t.setTextColor(Color.parseColor("#3B4252"));
-        t.setBackground(roundRect(Color.parseColor("#F2F4F8"), 10, 0, 0));
+        t.setTextColor(c("#3B4252"));
+        t.setBackground(roundRect(c("#F2F4F8"), 10, 0, 0));
         t.setPadding(dp(12), dp(10), dp(12), dp(10));
         t.setTextIsSelectable(true);
         t.setLineSpacing(dp(2), 1.0f);
@@ -1804,9 +2135,9 @@ public class MainActivity extends Activity {
         et.setSingleLine(true);
         et.setInputType(InputType.TYPE_CLASS_TEXT);
         et.setTextSize(14);
-        et.setTextColor(Color.parseColor("#101418"));
+        et.setTextColor(c("#101418"));
         et.setPadding(dp(12), dp(10), dp(12), dp(10));
-        et.setBackground(roundRect(Color.parseColor("#F5F7FB"), 12, Color.parseColor("#E7EBF2"), 1));
+        et.setBackground(roundRect(c("#F5F7FB"), 12, c("#E7EBF2"), 1));
         et.setSelection(et.getText().length());
         LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         p.topMargin = dp(14);
@@ -1817,20 +2148,20 @@ public class MainActivity extends Activity {
     private View dlgMenuItem(String title, String desc, boolean danger, View.OnClickListener click) {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundRect(Color.parseColor("#F7F8FB"), 14, 0, 0));
+        box.setBackground(roundRect(c("#F7F8FB"), 14, 0, 0));
         box.setPadding(dp(14), dp(12), dp(14), dp(12));
         box.setClickable(true);
         box.setOnClickListener(click);
         TextView t = new TextView(this);
         t.setText(title);
         t.setTextSize(14);
-        t.setTextColor(Color.parseColor(danger ? "#E5484D" : "#101418"));
+        t.setTextColor(c(danger ? "#E5484D" : "#101418"));
         box.addView(t);
         if (desc != null && desc.length() > 0) {
             TextView d = new TextView(this);
             d.setText(desc);
             d.setTextSize(11.5f);
-            d.setTextColor(Color.parseColor("#8A93A0"));
+            d.setTextColor(c("#8A93A0"));
             d.setPadding(0, dp(3), 0, 0);
             box.addView(d);
         }
@@ -1915,7 +2246,7 @@ public class MainActivity extends Activity {
         TextView codeHint = new TextView(this);
         codeHint.setText("习惯命令行的话，这条命令可以直接拿出来：");
         codeHint.setTextSize(12.5f);
-        codeHint.setTextColor(Color.parseColor("#6B7280"));
+        codeHint.setTextColor(c("#6B7280"));
         codeHint.setPadding(0, dp(16), 0, 0);
         c.addView(codeHint);
         c.addView(dlgCode(pull));
@@ -2111,10 +2442,10 @@ public class MainActivity extends Activity {
         if (b == null) return;
         if (active) {
             b.setTextColor(Color.WHITE);
-            b.setBackground(roundRect(Color.parseColor("#2F6BFF"), 10, 0, 0));
+            b.setBackground(roundRect(c("#2F6BFF"), 10, 0, 0));
         } else {
-            b.setTextColor(Color.parseColor("#5B6572"));
-            b.setBackground(roundRect(Color.parseColor("#F3F5F9"), 10, 0, 0));
+            b.setTextColor(c("#5B6572"));
+            b.setBackground(roundRect(c("#F3F5F9"), 10, 0, 0));
         }
     }
 
@@ -2208,6 +2539,95 @@ public class MainActivity extends Activity {
     }
 
     /** 提取成功后：先让用户起名，再入库并导出到文件夹。 */
+    /** 任务页：把剪贴板里的 key（或整段 xml）存进账号库。 */
+    private void importFromClipboard() {
+        String text = "";
+        try {
+            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null) {
+                android.content.ClipData cd = cm.getPrimaryClip();
+                if (cd.getItemCount() > 0 && cd.getItemAt(0).coerceToText(this) != null) {
+                    text = cd.getItemAt(0).coerceToText(this).toString().trim();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (text.length() == 0) {
+            toast("剪贴板是空的");
+            return;
+        }
+        if (text.contains("<string") && text.contains("AuthKey")) {
+            String k = extractFromPrefs(text);
+            if (k != null && k.trim().length() > 0) text = k.trim();
+        }
+        if (!isKeyLike(text)) {
+            LinearLayout c = dlgCard();
+            dlgTitle(c, "剪贴板里这段不像 key");
+            dlgSub(c, "key 一般是一长串字母数字。你复制的内容有 " + text.length() + " 个字符"
+                    + (text.length() > 120 ? "（可能是网页或说明文字）" : "") + "。\n\n请只复制 AuthKey 那一行，再点一次。");
+            final AlertDialog[] h = new AlertDialog[1];
+            c.addView(dlgPrimary("知道了", new View.OnClickListener() {
+                public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+            }));
+            h[0] = showCard(c);
+            return;
+        }
+        if (libraryHasKey(text)) toast("这个 key 账号库里已经有了");
+        askNameThenSave(text, "剪贴板");
+    }
+
+    /** 账号页长按菜单：只改备注。 */
+    private void doEditNote() {
+        final Account a = selected();
+        if (a == null) {
+            toast("请先选中一个账号");
+            return;
+        }
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "备注");
+        dlgSub(c, "写给自己看的说明，比如「日服小号」「朋友的号」。只存在这台手机上，不影响 key。");
+        final EditText et = dlgInput(a.note == null ? "" : a.note);
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("保存", new View.OnClickListener() {
+            public void onClick(View v) {
+                a.note = et.getText().toString().trim();
+                saveVault();
+                refreshAccountsView();
+                refreshList();
+                log("[备注] " + a.name + " → " + (a.note.length() == 0 ? "（清空）" : a.note));
+                if (h[0] != null) h[0].dismiss();
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    /** 首页「账号概览」三行。 */
+    private void refreshHomeOverview() {
+        if (rowHomeFp != null) {
+            rowHomeFp.setText(curFp != null ? curFp : (curFpLoaded ? "读不到" : "读取中…"));
+            rowHomeFp.setTextColor(curFp != null ? c("#2F6BFF") : c("#8A93A0"));
+        }
+        if (rowHomeBak != null) {
+            String lb = getPreferences(MODE_PRIVATE).getString("lastBackup", "");
+            String nm = lb;
+            if (lb.length() > 0) {
+                String[] parts = lb.split("/");
+                if (parts.length >= 2) nm = parts[parts.length - 2];
+                else if (parts.length == 1) nm = parts[0];
+            }
+            rowHomeBak.setText(nm.length() == 0 ? "还没有备份" : nm);
+        }
+        if (rowHomeCnt != null) {
+            rowHomeCnt.setText(countAccounts() + " 个账号 · " + (countBackups() + countExportEntries()) + " 个备份");
+        }
+    }
+
     private void askNameThenSave(final String key, final String source) {
         final String defName = "设备 " + Build.MODEL + " " + stamp();
         LinearLayout c = dlgCard();
@@ -2597,7 +3017,7 @@ public class MainActivity extends Activity {
         TextView listTv = new TextView(this);
         listTv.setText(sb.toString());
         listTv.setTextSize(12.5f);
-        listTv.setTextColor(Color.parseColor("#4B5563"));
+        listTv.setTextColor(c("#4B5563"));
         listTv.setLineSpacing(dp(4), 1f);
         listTv.setTypeface(android.graphics.Typeface.MONOSPACE);
         listTv.setPadding(0, dp(6), 0, dp(2));
@@ -2653,6 +3073,646 @@ public class MainActivity extends Activity {
         h[0] = showCard(c);
     }
 
+    // ---------- 局域网传输（手机开一个小网页，电脑浏览器直接下载） ----------
+
+    private void showLanTransfer() {
+        final LanServer srv;
+        try {
+            srv = new LanServer();
+            srv.start();
+        } catch (Throwable t) {
+            toast("启动失败：" + t);
+            return;
+        }
+        String ip = lanIp();
+        if (ip == null) {
+            toast("没连上 WiFi");
+            srv.halt();
+            return;
+        }
+        final String url = "http://" + ip + ":" + srv.port + "/?k=" + srv.code;
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "局域网传输");
+        dlgSub(c, "让手机和电脑连同一个 WiFi，在电脑浏览器里打开下面这个地址，就能看到账号列表并下载 key。\n\n关掉这个窗口就停止，不会一直开着。");
+        TextView u = new TextView(this);
+        u.setText(url);
+        u.setTextSize(13);
+        u.setTextColor(c("#2F6BFF"));
+        u.setTypeface(android.graphics.Typeface.MONOSPACE);
+        u.setTextIsSelectable(true);
+        u.setPadding(dp(12), dp(12), dp(12), dp(12));
+        u.setBackground(roundRect(c("#F2F4F8"), 10, 0, 0));
+        c.addView(u);
+        TextView tip = new TextView(this);
+        tip.setText("配对码 " + srv.code + " 已经写进地址里；别人就算扫到 IP，没有这个码也打不开。");
+        tip.setTextSize(11);
+        tip.setTextColor(c("#9AA3B0"));
+        tip.setPadding(dp(2), dp(8), dp(2), 0);
+        c.addView(tip);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("复制地址", new View.OnClickListener() {
+            public void onClick(View v) {
+                try {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("lan", url));
+                    toast("地址已复制");
+                } catch (Throwable t) { toast("复制失败"); }
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "停止", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+        h[0].setOnDismissListener(new android.content.DialogInterface.OnDismissListener() {
+            public void onDismiss(android.content.DialogInterface d) {
+                srv.halt();
+                log("[局域网] 已停止");
+            }
+        });
+        log("[局域网] 已启动 " + url);
+    }
+
+    /** 取本机 WiFi/热点的 IPv4 地址。 */
+    private String lanIp() {
+        try {
+            java.util.Enumeration<java.net.NetworkInterface> en = java.net.NetworkInterface.getNetworkInterfaces();
+            while (en.hasMoreElements()) {
+                java.net.NetworkInterface ni = en.nextElement();
+                if (!ni.isUp() || ni.isLoopback()) continue;
+                java.util.Enumeration<java.net.InetAddress> as = ni.getInetAddresses();
+                while (as.hasMoreElements()) {
+                    java.net.InetAddress a = as.nextElement();
+                    if (a instanceof java.net.Inet4Address && !a.isLoopbackAddress()) {
+                        String ip = a.getHostAddress();
+                        if (ip != null && ip.startsWith("192.168.") || ip != null && ip.startsWith("10.")
+                                || ip != null && ip.startsWith("172.")) return ip;
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 极简 HTTP 服务：只服务一个列表页 + 每个 key 的下载。 */
+    private class LanServer extends Thread {
+        final java.net.ServerSocket ss;
+        final int port;
+        final String code;
+        volatile boolean running = true;
+
+        LanServer() throws Exception {
+            java.net.ServerSocket s = null;
+            int p = 8765;
+            for (int i = 0; i < 20; i++) {
+                try {
+                    s = new java.net.ServerSocket(p + i, 8, java.net.InetAddress.getByName("0.0.0.0"));
+                    p = p + i;
+                    break;
+                } catch (Throwable ignored) {
+                }
+            }
+            if (s == null) throw new Exception("没有可用端口");
+            ss = s;
+            port = p;
+            code = String.format(Locale.US, "%04d", 1000 + new java.util.Random().nextInt(9000));
+            setDaemon(true);
+        }
+
+        public void halt() {
+            running = false;
+            try { ss.close(); } catch (Throwable ignored) {}
+        }
+
+        public void run() {
+            while (running) {
+                java.net.Socket sk = null;
+                try {
+                    sk = ss.accept();
+                    handle(sk);
+                } catch (Throwable ignored) {
+                } finally {
+                    try { if (sk != null) sk.close(); } catch (Throwable ignored) {}
+                }
+            }
+        }
+
+        private void handle(java.net.Socket sk) {
+            try {
+                sk.setSoTimeout(8000);
+                java.io.BufferedReader in = new java.io.BufferedReader(
+                        new java.io.InputStreamReader(sk.getInputStream(), "UTF-8"));
+                String line = in.readLine();
+                if (line == null) return;
+                String[] parts = line.split(" ");
+                if (parts.length < 2) return;
+                String path = parts[1];
+                java.io.OutputStream out = sk.getOutputStream();
+                if (path.startsWith("/?k=" + code) || path.equals("/?k=" + code)) {
+                    byte[] body = lanPage().getBytes("UTF-8");
+                    head(out, "200 OK", "text/html; charset=utf-8", body.length);
+                    out.write(body);
+                } else if (path.startsWith("/key?i=") && path.contains("k=" + code)) {
+                    int i = Integer.parseInt(path.substring(7, path.indexOf('&')));
+                    java.util.List<Account> list = lanList();
+                    if (i < 0 || i >= list.size()) {
+                        head(out, "404 Not Found", "text/plain; charset=utf-8", 0);
+                    } else {
+                        Account a = list.get(i);
+                        byte[] body = a.key.getBytes("UTF-8");
+                        head(out, "200 OK", "application/octet-stream", body.length,
+                                "attachment; filename=\"AuthKey.txt\"");
+                        out.write(body);
+                    }
+                } else {
+                    byte[] body = "配对码不对。请在 App 里重新打开局域网传输，用完整的地址。".getBytes("UTF-8");
+                    head(out, "403 Forbidden", "text/plain; charset=utf-8", body.length);
+                    out.write(body);
+                }
+                out.flush();
+            } catch (Throwable ignored) {
+            }
+        }
+
+        private void head(java.io.OutputStream out, String status, String type, int len) throws Exception {
+            head(out, status, type, len, null);
+        }
+
+        private void head(java.io.OutputStream out, String status, String type, int len, String disp) throws Exception {
+            StringBuilder h = new StringBuilder();
+            h.append("HTTP/1.1 ").append(status).append("\r\n");
+            h.append("Content-Type: ").append(type).append("\r\n");
+            h.append("Content-Length: ").append(len).append("\r\n");
+            h.append("Connection: close\r\n");
+            if (disp != null) h.append("Content-Disposition: ").append(disp).append("\r\n");
+            h.append("\r\n");
+            out.write(h.toString().getBytes("UTF-8"));
+        }
+
+        private java.util.List<Account> lanList() {
+            java.util.List<Account> l = new ArrayList<Account>();
+            for (Account a : accounts) if (inGame(a) && !a.isBackup()) l.add(a);
+            return l;
+        }
+
+        private String lanPage() {
+            java.util.List<Account> l = lanList();
+            StringBuilder b = new StringBuilder();
+            b.append("<!doctype html><html><head><meta charset=\"utf-8\">");
+            b.append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+            b.append("<title>东放 Key 管家 · 局域网传输</title><style>");
+            b.append("body{font:15px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;");
+            b.append("background:#f2f3f6;color:#101418;margin:0;padding:24px}");
+            b.append(".w{max-width:640px;margin:0 auto}h1{font-size:20px;margin:0 0 4px}");
+            b.append(".s{color:#8a93a0;font-size:13px;margin-bottom:18px}");
+            b.append(".i{background:#fff;border:1px solid #e7ebf2;border-radius:14px;padding:14px 16px;margin-bottom:10px}");
+            b.append(".n{font-weight:600}.m{color:#8a93a0;font-size:12px;margin-top:2px}");
+            b.append("a{display:inline-block;margin-top:8px;background:#2f6bff;color:#fff;text-decoration:none;");
+            b.append("padding:7px 14px;border-radius:9px;font-size:13px}");
+            b.append(".f{color:#9aa3b0;font-size:12px;margin-top:18px}");
+            b.append("</style></head><body><div class=\"w\">");
+            b.append("<h1>").append(esc(game.label)).append(" · Key 列表</h1>");
+            b.append("<div class=\"s\">共 ").append(l.size()).append(" 个账号 · 只在这台手机上开着这个窗口时能访问</div>");
+            for (int i = 0; i < l.size(); i++) {
+                Account a = l.get(i);
+                b.append("<div class=\"i\"><div class=\"n\">").append(esc(a.name)).append("</div>");
+                b.append("<div class=\"m\">指纹 ").append(a.fpShort()).append(" · ").append(a.key.length()).append("B");
+                if (a.note != null && a.note.length() > 0) b.append(" · ").append(esc(a.note));
+                b.append("</div><a href=\"/key?i=").append(i).append("&k=").append(code).append("\">下载 AuthKey.txt</a></div>");
+            }
+            b.append("<div class=\"f\">下载下来的是原始的 key 文本，放进游戏对应的 AuthKey 路径即可。关掉 App 里的窗口后这个页面就打不开了。</div>");
+            b.append("</div></body></html>");
+            return b.toString();
+        }
+
+        private String esc(String s) {
+            if (s == null) return "";
+            return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\"", "&quot;");
+        }
+    }
+
+    // ---------- 二维码 ----------
+
+    private void pickQrImage() {
+        try {
+            Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+            i.setType("image/*");
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(Intent.createChooser(i, "选一张二维码图片"), REQ_QR_IMG);
+        } catch (Throwable t) {
+            toast("打不开图片选择器");
+        }
+    }
+
+    private void decodeQrUri(final android.net.Uri uri) {
+        log("[二维码] 正在识别图片…");
+        pool.execute(new Runnable() {
+            public void run() {
+                String text = null;
+                String err = null;
+                try {
+                    android.graphics.BitmapFactory.Options o = new android.graphics.BitmapFactory.Options();
+                    o.inJustDecodeBounds = true;
+                    android.graphics.BitmapFactory.decodeStream(getContentResolver().openInputStream(uri), null, o);
+                    int scale = 1;
+                    while (o.outWidth / scale > 1400 || o.outHeight / scale > 1400) scale *= 2;
+                    android.graphics.BitmapFactory.Options o2 = new android.graphics.BitmapFactory.Options();
+                    o2.inSampleSize = scale;
+                    android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeStream(
+                            getContentResolver().openInputStream(uri), null, o2);
+                    if (bm == null) throw new Exception("图片读不出来");
+                    int w = bm.getWidth(), h = bm.getHeight();
+                    int[] px = new int[w * h];
+                    bm.getPixels(px, 0, w, 0, 0, w, h);
+                    com.google.zxing.RGBLuminanceSource src = new com.google.zxing.RGBLuminanceSource(w, h, px);
+                    com.google.zxing.BinaryBitmap bb = new com.google.zxing.BinaryBitmap(
+                            new com.google.zxing.common.HybridBinarizer(src));
+                    com.google.zxing.Result rr = new com.google.zxing.MultiFormatReader().decode(bb);
+                    text = rr.getText();
+                } catch (com.google.zxing.NotFoundException nf) {
+                    err = "图片里没有二维码，或者二维码太糊";
+                } catch (Throwable t) {
+                    err = "识别失败：" + t;
+                }
+                final String tt = text;
+                final String ee = err;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (tt == null) {
+                            log("[二维码] " + ee);
+                            toast(ee == null ? "没识别出内容" : ee);
+                            return;
+                        }
+                        String k = tt.trim();
+                        if (k.contains("<string") && k.contains("AuthKey")) {
+                            String x = extractFromPrefs(k);
+                            if (x != null && x.trim().length() > 0) k = x.trim();
+                        }
+                        if (!isKeyLike(k)) {
+                            log("[二维码] 解出来的内容不像 key（" + k.length() + " 字符）");
+                            toast("二维码里不是 key");
+                            return;
+                        }
+                        log("[二维码] 已识别出 key，指纹 " + hash(k).substring(0, 16));
+                        if (libraryHasKey(k)) toast("这个 key 账号库里已经有了");
+                        askNameThenSave(k, "二维码");
+                    }
+                });
+            }
+        });
+    }
+
+    private void makeQr(final Account a) {
+        pool.execute(new Runnable() {
+            public void run() {
+                File out = null;
+                try {
+                    int S = 660;
+                    java.util.Hashtable<com.google.zxing.EncodeHintType, Object> hints =
+                            new java.util.Hashtable<com.google.zxing.EncodeHintType, Object>();
+                    hints.put(com.google.zxing.EncodeHintType.CHARACTER_SET, "UTF-8");
+                    hints.put(com.google.zxing.EncodeHintType.MARGIN, 2);
+                    com.google.zxing.common.BitMatrix m = new com.google.zxing.qrcode.QRCodeWriter()
+                            .encode(a.key, com.google.zxing.BarcodeFormat.QR_CODE, S, S, hints);
+                    int[] px = new int[S * S];
+                    for (int y = 0; y < S; y++) {
+                        for (int x = 0; x < S; x++) {
+                            px[y * S + x] = m.get(x, y) ? 0xFF101418 : 0xFFFFFFFF;
+                        }
+                    }
+                    android.graphics.Bitmap bm = android.graphics.Bitmap.createBitmap(S, S, android.graphics.Bitmap.Config.ARGB_8888);
+                    bm.setPixels(px, 0, S, 0, 0, S, S);
+                    File dir = new File(getCacheDir(), "qr");
+                    if (!dir.exists()) dir.mkdirs();
+                    out = new File(dir, safeName(a.name) + "-" + a.fpShort() + ".png");
+                    java.io.FileOutputStream fo = new java.io.FileOutputStream(out);
+                    bm.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, fo);
+                    fo.close();
+                } catch (Throwable t) {
+                    log("[二维码] 生成失败：" + t);
+                    out = null;
+                }
+                final File f = out;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (f == null) { toast("生成二维码失败"); return; }
+                        log("[二维码] 已生成 " + f.getName());
+                        LinearLayout c = dlgCard();
+                        dlgTitle(c, a.name);
+                        dlgSub(c, "扫这个二维码就能拿到 key。发给别人等于把账号交给对方，注意场合。");
+                        android.widget.ImageView iv = new android.widget.ImageView(MainActivity.this);
+                        android.graphics.Bitmap bm2 = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
+                        iv.setImageBitmap(bm2);
+                        iv.setAdjustViewBounds(true);
+                        iv.setBackground(roundRect(c("#FFFFFF"), 12, 0, 0));
+                        iv.setPadding(dp(8), dp(8), dp(8), dp(8));
+                        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
+                                ViewGroup.LayoutParams.MATCH_PARENT, dp(230));
+                        ilp.setMargins(0, dp(8), 0, 0);
+                        c.addView(iv, ilp);
+                        final AlertDialog[] h = new AlertDialog[1];
+                        c.addView(dlgPrimary("分享这张二维码", new View.OnClickListener() {
+                            public void onClick(View v) {
+                                if (h[0] != null) h[0].dismiss();
+                                try {
+                                    android.net.Uri u = ApkProvider.uriForQr(f);
+                                    Intent sh = new Intent(Intent.ACTION_SEND);
+                                    sh.setType("image/png");
+                                    sh.putExtra(Intent.EXTRA_STREAM, u);
+                                    sh.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                                    startActivity(Intent.createChooser(sh, "分享二维码"));
+                                } catch (Throwable t) {
+                                    toast("分享失败：" + t);
+                                }
+                            }
+                        }));
+                        LinearLayout row = dlgBtnRow();
+                        dlgAddGhost(row, "关闭", new View.OnClickListener() {
+                            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                        }, false);
+                        c.addView(row);
+                        h[0] = showCard(c);
+                    }
+                });
+            }
+        });
+    }
+
+    // ---------- 导入历史 / 备份保留 / 撤销 / 打包导出 ----------
+
+    private String backupKeep() {
+        return getPreferences(MODE_PRIVATE).getString("backupKeep", "all");
+    }
+
+    private String keepLabel(String k) {
+        if ("10".equals(k)) return "最近 10 份";
+        if ("30d".equals(k)) return "最近 30 天";
+        return "永久保留";
+    }
+
+    private void chooseBackupKeep() {
+        final String[] keys = new String[]{"all", "10", "30d"};
+        String[] labels = new String[]{"永久保留（默认）", "最近 10 份", "最近 30 天"};
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "自动备份保留");
+        dlgSub(c, "超出的自动备份会从账号库移除，导出的文件夹也会一起删。当前：" + keepLabel(backupKeep()) + "。");
+        final AlertDialog[] h = new AlertDialog[1];
+        for (int i = 0; i < keys.length; i++) {
+            final String k = keys[i];
+            boolean on = k.equals(backupKeep());
+            c.addView(dlgMenuItem(labels[i] + (on ? "  ✓" : ""), on ? "当前选择" : "", false, new View.OnClickListener() {
+                public void onClick(View v) {
+                    getPreferences(MODE_PRIVATE).edit().putString("backupKeep", k).apply();
+                    if (rowKeepVal != null) rowKeepVal.setText(keepLabel(k));
+                    if (h[0] != null) h[0].dismiss();
+                    pruneBackups();
+                    refreshList();
+                    toast("已改为「" + keepLabel(k) + "」");
+                }
+            }));
+        }
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    /** 按保留策略清掉多余的自动备份（只动 backup，不动账号）。 */
+    private void pruneBackups() {
+        String keep = backupKeep();
+        if ("all".equals(keep)) return;
+        java.util.List<Account> bs = new ArrayList<Account>();
+        for (Account a : accounts) if (a.isBackup() && inGame(a)) bs.add(a);
+        if (bs.size() == 0) return;
+        java.util.Collections.sort(bs, new java.util.Comparator<Account>() {
+            public int compare(Account x, Account y) {
+                String cx = x.created == null ? "" : x.created;
+                String cy = y.created == null ? "" : y.created;
+                return cy.compareTo(cx); // 新的在前
+            }
+        });
+        long cutoff = 0L;
+        if ("30d".equals(keep)) cutoff = System.currentTimeMillis() - 30L * 24 * 3600 * 1000;
+        java.util.List<Account> kill = new ArrayList<Account>();
+        for (int i = 0; i < bs.size(); i++) {
+            Account a = bs.get(i);
+            boolean drop = false;
+            if ("10".equals(keep)) drop = i >= 10;
+            if (cutoff > 0) {
+                long t = 0L;
+                try {
+                    t = new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).parse(a.created == null ? "" : a.created).getTime();
+                } catch (Throwable ignored) {
+                }
+                if (t > 0 && t < cutoff) drop = true;
+            }
+            if (drop) kill.add(a);
+        }
+        if (kill.size() == 0) return;
+        for (Account a : kill) {
+            if (a.folder != null && a.folder.length() > 0) {
+                try {
+                    File f = exportFileOf(a);
+                    if (f != null && f.exists()) f.delete();
+                } catch (Throwable ignored) {
+                }
+            }
+            accounts.remove(a);
+        }
+        saveVault();
+        log("[备份] 按「" + keepLabel(keep) + "」清掉了 " + kill.size() + " 份旧备份");
+    }
+
+    private void recordImportHistory(String toName, String prevKey, String targetKey, String backupName) {
+        try {
+            SharedPreferences sp = getPreferences(MODE_PRIVATE);
+            String raw = sp.getString("importHistory", "[]");
+            JSONArray arr = new JSONArray(raw);
+            JSONObject o = new JSONObject();
+            o.put("t", stamp());
+            o.put("to", toName);
+            o.put("prevFp", hash(prevKey).substring(0, 16));
+            o.put("toFp", hash(targetKey == null ? "" : targetKey).substring(0, 16));
+            o.put("backup", backupName == null ? "" : backupName);
+            JSONArray out = new JSONArray();
+            out.put(o);
+            for (int i = 0; i < arr.length() && out.length() < 100; i++) out.put(arr.get(i));
+            sp.edit().putString("importHistory", out.toString()).apply();
+        } catch (Throwable t) {
+            log("[历史] 记录失败：" + t);
+        }
+    }
+
+    private void showImportHistory() {
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "导入历史");
+        final AlertDialog[] h = new AlertDialog[1];
+        try {
+            JSONArray arr = new JSONArray(getPreferences(MODE_PRIVATE).getString("importHistory", "[]"));
+            if (arr.length() == 0) {
+                dlgSub(c, "还没有导入记录。每次把 key 写进游戏后，这里会记下时间、换成了谁、原来的 key 备份在哪。");
+            } else {
+                dlgSub(c, "最近 " + Math.min(arr.length(), 12) + " 次。点一条可以把游戏回到那一次之前的 key。");
+                int n = Math.min(arr.length(), 12);
+                for (int i = 0; i < n; i++) {
+                    final JSONObject o = arr.getJSONObject(i);
+                    final String bak = o.optString("backup", "");
+                    String t = o.optString("t", "");
+                    String to = o.optString("to", "");
+                    String prevFp = o.optString("prevFp", "");
+                    c.addView(dlgMenuItem(t + "  →  " + to,
+                            "换成这之前：指纹 " + prevFp + (bak.length() == 0 ? " · 没有可用的备份" : " · 备份「" + bak + "」"),
+                            false, new View.OnClickListener() {
+                                public void onClick(View v) {
+                                    if (h[0] != null) h[0].dismiss();
+                                    rollbackTo(bak);
+                                }
+                            }));
+                }
+            }
+        } catch (Throwable t) {
+            dlgSub(c, "读历史失败：" + t);
+        }
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "关闭", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, true);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    private void rollbackTo(String backupName) {
+        if (backupName == null || backupName.length() == 0) {
+            toast("这条记录没有可用的备份");
+            return;
+        }
+        Account bak = null;
+        for (Account a : accounts) if (a.isBackup() && backupName.equals(a.name)) { bak = a; break; }
+        if (bak == null) {
+            toast("备份「" + backupName + "」已经不在账号库里了");
+            return;
+        }
+        log("[历史] 回滚到「" + backupName + "」");
+        doImportNow(bak);
+    }
+
+    /** 撤销刚做的导入：把上一次的 key 写回游戏。 */
+    private void undoImport(final String prevKey, final String targetName) {
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "撤销这次导入？");
+        dlgSub(c, "会把游戏里的 key 写回导入「" + targetName + "」之前的那个，并校验。不会删掉账号库里的「" + targetName + "」。");
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("撤销", new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                if (!permReady()) { showNoPerm(); return; }
+                log("--- 撤销导入，写回原 key ---");
+                pool.execute(new Runnable() {
+                    public void run() {
+                        shell("am force-stop " + PKG, 15000);
+                        boolean ok = writeKey(prevKey.getBytes());
+                        byte[] back = readKeyAt(EXT_KEY);
+                        String got = back == null ? "" : new String(back).trim();
+                        boolean same = got.equals(prevKey.trim());
+                        log(ok && same ? "[撤销] 已写回原 key 并校验通过" : "[撤销] 写回失败，请用备份文件手动恢复");
+                        curFpLoaded = false;
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                refreshCurrentFp();
+                                toast(ok && same ? "已撤销，游戏回到上一个 key" : "撤销失败，请手动恢复");
+                            }
+                        });
+                    }
+                });
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    /** 任务页：把账号库里的 key 打包成一个 zip。 */
+    private void startZipExport() {
+        if (countAccounts() == 0) {
+            toast("账号库里还没有账号");
+            return;
+        }
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, REQ_TREE_ZIP);
+        } catch (Throwable t) {
+            toast("打不开文件夹选择器");
+        }
+    }
+
+    private void writeZipToTree(final Uri tree) {
+        final String label = treeLabel(tree);
+        log("[打包] 目标文件夹 " + label);
+        pool.execute(new Runnable() {
+            public void run() {
+                String name = "东放Key-" + game.label + "-"
+                        + new java.text.SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new java.util.Date()) + ".zip";
+                int n = 0;
+                try {
+                    String docId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                    Uri parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, docId);
+                    Uri out = android.provider.DocumentsContract.createDocument(getContentResolver(), parent, "application/zip", name);
+                    java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
+                            new java.io.BufferedOutputStream(getContentResolver().openOutputStream(out)));
+                    StringBuilder man = new StringBuilder();
+                    man.append("Housamo AuthKey Manager\n");
+                    man.append("游戏: ").append(game.label).append("\n");
+                    man.append("时间: ").append(stamp()).append("\n");
+                    man.append("说明: 每个子文件夹里的 AuthKey.txt 就是一个账号的 key。\n\n");
+                    man.append("文件夹\t指纹\t大小\t创建时间\t备注\n");
+                    for (Account a : accounts) {
+                        if (!inGame(a) || a.isBackup()) continue;
+                        String dir = safeName(a.name);
+                        zos.putNextEntry(new java.util.zip.ZipEntry(dir + "/AuthKey.txt"));
+                        zos.write(a.key.getBytes("UTF-8"));
+                        zos.closeEntry();
+                        man.append(dir).append("\t").append(a.fpShort()).append("\t")
+                                .append(a.key.length()).append("B\t").append(a.created).append("\t")
+                                .append(a.note == null ? "" : a.note).append("\n");
+                        n++;
+                    }
+                    zos.putNextEntry(new java.util.zip.ZipEntry("manifest.txt"));
+                    zos.write(man.toString().getBytes("UTF-8"));
+                    zos.closeEntry();
+                    zos.finish();
+                    zos.close();
+                } catch (Throwable t) {
+                    log("[打包] 失败：" + t);
+                    toast("打包失败：" + t);
+                    return;
+                }
+                final int count = n;
+                log("[打包] 已写入 " + count + " 个 key → " + label + "/" + name);
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        LinearLayout c = dlgCard();
+                        dlgTitle(c, "打包完成");
+                        dlgSub(c, "已把 " + count + " 个账号写进 " + label + "/" + name + "，里面还有一个 manifest.txt 写着每个账号的指纹。");
+                        final AlertDialog[] h = new AlertDialog[1];
+                        c.addView(dlgPrimary("知道了", new View.OnClickListener() {
+                            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                        }));
+                        h[0] = showCard(c);
+                    }
+                });
+            }
+        });
+    }
+
     private void addAccount(String name, String key, String source) {
         Account a = new Account(name, key);
         a.game = game.id;
@@ -2706,7 +3766,7 @@ public class MainActivity extends Activity {
                 String apk = null;
                 try {
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
-                            "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest").openConnection();
+                            "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases?per_page=20").openConnection();
                     c.setConnectTimeout(8000);
                     c.setReadTimeout(8000);
                     c.setRequestProperty("Accept", "application/vnd.github+json");
@@ -2718,12 +3778,32 @@ public class MainActivity extends Activity {
                     while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
                     in.close();
                     String body = new String(bo.toByteArray(), "UTF-8");
+                    // 按 release 逐段找：取「第一个带 .apk 资产的版本」，避免把只发 Windows 包的版本当成新版 App
                     java.util.regex.Matcher m1 = java.util.regex.Pattern.compile("\"tag_name\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
-                    if (m1.find()) tag = m1.group(1);
-                    java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
-                    if (m2.find()) url = m2.group(1);
-                    java.util.regex.Matcher m3 = java.util.regex.Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.apk)\"").matcher(body);
-                    if (m3.find()) apk = m3.group(1);
+                    java.util.List<Integer> tags = new ArrayList<Integer>();
+                    java.util.List<String> names = new ArrayList<String>();
+                    while (m1.find()) {
+                        tags.add(m1.start());
+                        names.add(m1.group(1));
+                    }
+                    for (int i = 0; i < tags.size(); i++) {
+                        int from = tags.get(i);
+                        int to = i + 1 < tags.size() ? tags.get(i + 1) : body.length();
+                        String seg = body.substring(from, to);
+                        java.util.regex.Matcher ma = java.util.regex.Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.apk)\"").matcher(seg);
+                        if (!ma.find()) continue;
+                        tag = names.get(i);
+                        apk = ma.group(1);
+                        java.util.regex.Matcher mu = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(seg);
+                        if (mu.find()) url = mu.group(1);
+                        break;
+                    }
+                    if (tag == null && !names.isEmpty()) {
+                        tag = names.get(0);
+                        String seg0 = body.substring(tags.get(0), tags.size() > 1 ? tags.get(1) : body.length());
+                        java.util.regex.Matcher mu = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(seg0);
+                        if (mu.find()) url = mu.group(1);
+                    }
                 } catch (Throwable t) {
                     if (manual) {
                         runOnUiThread(new Runnable() {
@@ -2741,9 +3821,10 @@ public class MainActivity extends Activity {
                 final int cmp = ver.length() == 0 ? 0 : compareVer(ver, CURRENT_VER);
                 runOnUiThread(new Runnable() {
                     public void run() {
+                        log("[更新] 本地 " + CURRENT_VER + " / 远端 " + (ver.length() == 0 ? "读取失败" : ver) + (apkUrl == null ? "（无 APK 资产）" : ""));
                         if (rowUpdateVal != null) {
                             rowUpdateVal.setText(cmp > 0 ? "发现 " + ver + "，点此更新" : "已是最新版 " + CURRENT_VER);
-                            rowUpdateVal.setTextColor(cmp > 0 ? Color.parseColor("#2F6BFF") : Color.parseColor("#9AA3B0"));
+                            rowUpdateVal.setTextColor(cmp > 0 ? c("#2F6BFF") : c("#9AA3B0"));
                         }
                         if (cmp > 0) {
                             log("[更新] 发现新版本 " + ver + (apkUrl == null ? "（该版本没有 APK 资产，将跳网页）" : ""));
@@ -2896,6 +3977,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        if (lockOn() && !unlocked) {
+            if (lastBgAt == 0L || System.currentTimeMillis() - lastBgAt > 30000L) {
+                host.postDelayed(new Runnable() {
+                    public void run() { if (!unlocked) showLockScreen(); }
+                }, 120L);
+            }
+        }
         // 每次回到 App 核对一次：游戏里的 key 变了吗
         if (list != null) curFpLoaded = false;
         refreshCurrentFp();
@@ -2951,7 +4039,11 @@ public class MainActivity extends Activity {
         super.onActivityResult(req, res, data);
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         android.net.Uri uri = data.getData();
-        if (req != REQ_TREE && req != REQ_TREE_COPY && req != REQ_TREE_BAK && req != REQ_TREE_IMPORT) return;
+        if (req == REQ_QR_IMG) {
+            decodeQrUri(uri);
+            return;
+        }
+        if (req != REQ_TREE && req != REQ_TREE_COPY && req != REQ_TREE_BAK && req != REQ_TREE_IMPORT && req != REQ_TREE_ZIP) return;
         try {
             getContentResolver().takePersistableUriPermission(uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
@@ -2959,6 +4051,10 @@ public class MainActivity extends Activity {
         }
         if (req == REQ_TREE_IMPORT) {
             scanFolderForKeys(uri);
+            return;
+        }
+        if (req == REQ_TREE_ZIP) {
+            writeZipToTree(uri);
             return;
         }
         if (req == REQ_TREE_COPY) {
@@ -3141,8 +4237,8 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(10);
-        t.setTextColor(Color.parseColor(fg));
-        t.setBackground(roundRect(Color.parseColor(bg), 20, 0, 0));
+        t.setTextColor(c(fg));
+        t.setBackground(roundRect(c(bg), 20, 0, 0));
         t.setPadding(dp(7), dp(2), dp(7), dp(2));
         return t;
     }
@@ -3166,6 +4262,22 @@ public class MainActivity extends Activity {
         final AlertDialog[] h = new AlertDialog[1];
         c.addView(dlgMenuItem("导入到游戏", "写进游戏，覆盖当前登录的 key", false, new View.OnClickListener() {
             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doImport(); }
+        }));
+        c.addView(dlgMenuItem("改备注", "给自己看的说明，比如「日服小号」", false, new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doEditNote(); }
+        }));
+        c.addView(dlgMenuItem("生成二维码", "把这个 key 做成二维码图片，方便当面发给另一台手机", false, new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); makeQr(a); }
+        }));
+        c.addView(dlgMenuItem("复制指纹", "复制 " + a.fpShort() + "，发给别人核对用", false, new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                try {
+                    android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                    cm.setPrimaryClip(android.content.ClipData.newPlainText("fingerprint", a.fpShort()));
+                    toast("指纹已复制：" + a.fpShort());
+                } catch (Throwable t) { toast("复制失败"); }
+            }
         }));
         if (!a.isBackup()) c.addView(dlgMenuItem("重命名", "只改账号库里显示的名字", false, new View.OnClickListener() {
             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doRename(); }
@@ -3214,6 +4326,7 @@ public class MainActivity extends Activity {
                         curFp = f;
                         curKey = kk;
                         refreshAccountsView();
+                        refreshHomeOverview();
                         refreshKeyCheckBanner();
                         if (pendingImport != null && selected() == pendingImport) {
                             pendingImport = null;
@@ -3260,12 +4373,12 @@ public class MainActivity extends Activity {
         }
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(roundRect(Color.parseColor("#FFF8E6"), 16, Color.parseColor("#F0D9A8"), 1));
+        c.setBackground(roundRect(c("#FFF8E6"), 16, c("#F0D9A8"), 1));
         c.setPadding(dp(14), dp(12), dp(14), dp(12));
         TextView t = new TextView(this);
         t.setText("游戏里的 key 和账号库对不上");
         t.setTextSize(15);
-        t.setTextColor(Color.parseColor("#8A6D1F"));
+        t.setTextColor(c("#8A6D1F"));
         t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         c.addView(t);
         TextView d = new TextView(this);
@@ -3274,7 +4387,7 @@ public class MainActivity extends Activity {
         msg += "\n想留一份，就点「存到账号库」。";
         d.setText(msg);
         d.setTextSize(12);
-        d.setTextColor(Color.parseColor("#7A6633"));
+        d.setTextColor(c("#7A6633"));
         d.setPadding(0, dp(4), 0, dp(8));
         c.addView(d);
         LinearLayout row = new LinearLayout(this);
@@ -3317,7 +4430,7 @@ public class MainActivity extends Activity {
         TextView t = new TextView(this);
         t.setText("游戏");
         t.setTextSize(14);
-        t.setTextColor(Color.parseColor("#1B1F24"));
+        t.setTextColor(c("#1B1F24"));
         t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         c.addView(t);
         LinearLayout row = new LinearLayout(this);
@@ -3340,7 +4453,7 @@ public class MainActivity extends Activity {
             TextView h = new TextView(this);
             h.setText("两个游戏的账号、备份和导出文件夹都是分开的，切换不会影响另一边。");
             h.setTextSize(11);
-            h.setTextColor(Color.parseColor("#9AA3B0"));
+            h.setTextColor(c("#9AA3B0"));
             h.setPadding(dp(2), dp(6), 0, 0);
             c.addView(h);
         }
@@ -3581,7 +4694,7 @@ public class MainActivity extends Activity {
                 if (h[0] != null) h[0].dismiss();
             }
         });
-        del.setBackground(roundRect(Color.parseColor("#E5484D"), 12, 0, 0));
+        del.setBackground(roundRect(c("#E5484D"), 12, 0, 0));
         c.addView(del);
         LinearLayout row = dlgBtnRow();
         dlgAddGhost(row, "取消", new View.OnClickListener() {
@@ -3938,7 +5051,7 @@ public class MainActivity extends Activity {
         box.setOrientation(LinearLayout.VERTICAL);
         final TextView body = new TextView(this);
         body.setTextSize(12);
-        body.setTextColor(Color.parseColor("#3A4250"));
+        body.setTextColor(c("#3A4250"));
         body.setLineSpacing(dp(4), 1f);
         body.setText("免责声明"
                 + "\n\n1. 本工具只做一件事：把游戏目录里的 AuthKey 文件复制出来备份，需要时再复制回去。不修改游戏数据、不上传任何内容、不联网（只有「检查更新」会访问 GitHub）。"
@@ -3953,7 +5066,7 @@ public class MainActivity extends Activity {
         box.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
         final TextView tip = new TextView(this);
         tip.setTextSize(12);
-        tip.setTextColor(Color.parseColor("#8A93A0"));
+        tip.setTextColor(c("#8A93A0"));
         tip.setPadding(0, dp(10), 0, 0);
         tip.setText("请阅读到最底部，倒计时结束后才能点「同意」");
         box.addView(tip);
@@ -4076,6 +5189,7 @@ public class MainActivity extends Activity {
             public void run() {
                 // 1. 备份现有 key
                 final boolean[] backupOk = {true};
+                String bakNameForHistory = null;
                 String old = null;
                 byte[] cur = readKeyAt(EXT_KEY);
                 if (cur == null) cur = readKeyAt(PREFS1);
@@ -4085,6 +5199,7 @@ public class MainActivity extends Activity {
                         Account already = findBackupOfKey(old);
                         if (already != null) {
                             log("[备份] 这个 key 已经备份过（" + already.name + "），跳过重复备份");
+                            bakNameForHistory = already.name;
                         } else {
                         final String saved = backupCurrentKey(old, a.name);
                         if (saved == null) backupOk[0] = false;
@@ -4095,10 +5210,12 @@ public class MainActivity extends Activity {
                                 ? ("导入「" + a.name + "」前自动备份（文件写入失败，只存在账号库）")
                                 : ("导入「" + a.name + "」前自动备份 → " + saved);
                         bak.folder = saved == null ? "" : saved;
+                        bakNameForHistory = bak.name;
                         runOnUiThread(new Runnable() {
                             public void run() {
                                 accounts.add(bak);
                                 saveVault();
+                                pruneBackups();
                                 refreshList();
                                 if (saved != null) {
                                     getPreferences(MODE_PRIVATE).edit().putString("lastBackup", saved).apply();
@@ -4117,6 +5234,8 @@ public class MainActivity extends Activity {
                     return;
                 }
                 final String prevKey = old;
+                final String histBackup = bakNameForHistory;
+                if (prevKey != null && prevKey.length() >= 8) recordImportHistory(a.name, prevKey, a.key, histBackup);
                 // 2. 停止游戏
                 shell("am force-stop " + PKG, 15000);
                 log("[停止] 已尝试停止游戏进程");
@@ -4156,6 +5275,14 @@ public class MainActivity extends Activity {
                             }
                         }));
                         LinearLayout row = dlgBtnRow();
+                        if (prevKey != null && prevKey.length() >= 8) {
+                            dlgAddGhost(row, "撤销这次导入", new View.OnClickListener() {
+                                public void onClick(View v) {
+                                    if (h[0] != null) h[0].dismiss();
+                                    undoImport(prevKey, a.name);
+                                }
+                            }, true);
+                        }
                         dlgAddGhost(row, "稍后", new View.OnClickListener() {
                             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
                         }, false);
