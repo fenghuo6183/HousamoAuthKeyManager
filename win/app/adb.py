@@ -134,6 +134,20 @@ class Adb:
         out, err, code = self.run(["-s", serial, "shell", command], timeout=timeout)
         return out
 
+    def shell_stdin(self, serial, command, data, timeout=30):
+        """Run a shell command and feed `data` to its stdin (adb forwards stdin)."""
+        cmd = [self.path, "-s", serial, "shell", command]
+        try:
+            proc = subprocess.run(cmd, input=data, capture_output=True, timeout=timeout,
+                                  creationflags=_NO_WINDOW)
+        except subprocess.TimeoutExpired:
+            raise AdbError("adb 命令超时: " + command)
+        except OSError as exc:
+            raise AdbError("无法启动 adb: %s" % exc)
+        out = proc.stdout.decode("utf-8", "replace")
+        err = proc.stderr.decode("utf-8", "replace")
+        return out, err, proc.returncode
+
     def shell_bytes(self, serial, command, timeout=20):
         out, _, _ = self.run(["-s", serial, "exec-out", command], timeout=timeout, binary=True)
         return out
