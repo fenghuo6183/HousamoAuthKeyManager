@@ -15,8 +15,12 @@ from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 from . import adb as adb_mod
 from . import bgfx
+from . import bulk
 from . import config
 from . import game
+from . import keyscan
+from . import lanshare
+from . import qr
 from . import reconcile
 from . import theme
 from . import updater
@@ -94,7 +98,8 @@ class App:
         self._first_job = self.root.after(30, self._first_paint)
         self._init_backend()
         self._apply_update_state()
-        self.root.after(3000, lambda: self.check_update(manual=False))
+        self._auto_check = self.root.after(3000, self._auto_update_check)
+        self.root.bind("<Destroy>", self._on_destroy, add="+")
 
     # -- window chrome -------------------------------------------------
     def _on_destroy(self, event=None):
@@ -235,6 +240,24 @@ class App:
     def _build_task_page(self):
         pal = self.pal
 
+        overview = RoundCard(self)
+        ob = overview.body
+        stats = tk.Frame(ob, bg=pal["card"])
+        stats.pack(fill="x")
+        self.stat_labels = {}
+        tiles = (("game_key", "游戏内 key"), ("last_import", "上次导入"),
+                 ("accounts", "账号"), ("backups", "备份"))
+        for index, (key, title) in enumerate(tiles):
+            cell = tk.Frame(stats, bg=pal["card_sunken"])
+            cell.pack(side="left", expand=True, fill="x",
+                      padx=(theme.px(0), theme.px(0) if index == len(tiles) - 1
+                            else theme.px(8)))
+            label(cell, self, title, size=8, color="text_muted").pack(
+                anchor="w", padx=theme.px(10), pady=(theme.px(7), theme.px(0)))
+            value = label(cell, self, "—", size=11, weight="bold")
+            value.pack(anchor="w", padx=theme.px(10), pady=(theme.px(0), theme.px(7)))
+            self.stat_labels[key] = value
+
         device_card = RoundCard(self)
         body = device_card.body
         head = SectionTitle.build(self, body, "① 选择设备", "USB 连接手机，或先启动模拟器")
@@ -246,10 +269,10 @@ class App:
         self.game_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
         self.adb_chip = chip(right, self, "正在检测 adb…", tone="muted")
         self.adb_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
-        PillButton(self, right, "扫描模拟器", command=self.scan_emulators, kind="ghost",
-                   width=104, height=32).pack(side="left", padx=(theme.px(0), theme.px(8)))
-        PillButton(self, right, "刷新设备", command=self.refresh_devices, kind="ghost",
-                   width=92, height=32).pack(side="left")
+        PillButton(self, right, "扫描", command=self.scan_emulators, kind="ghost",
+                   width=64, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, right, "刷新", command=self.refresh_devices, kind="ghost",
+                   width=64, height=32).pack(side="left")
 
         self.reconcile_bar = tk.Frame(body, bg=pal["warn_soft"])
         inner = tk.Frame(self.reconcile_bar, bg=pal["warn_soft"])
@@ -318,7 +341,8 @@ class App:
                      size=9, color="text_faint")
         hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
 
-        self.pages["tasks"] = [(device_card, None),
+        self.pages["tasks"] = [(overview, max(theme.px(96), overview.required_height())),
+                               (device_card, None),
                                (action_card, max(theme.px(208), action_card.required_height()))]
 
     # -- page: vault ---------------------------------------------------
@@ -340,6 +364,35 @@ class App:
         self.search_var.trace_add("write", lambda *a: self.refresh_vault())
         search = entry(right, self, self.search_var, width=22)
         search.pack(side="left", padx=(theme.px(8), theme.px(0)), ipady=theme.px(4))
+
+        bulk_bar = tk.Frame(body, bg=pal["card"])
+        bulk_bar.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        PillButton(self, bulk_bar, "批量导入文件夹", command=self.import_folder, kind="ghost",
+                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, bulk_bar, "从剪贴板导入", command=self.import_clipboard, kind="ghost",
+                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, bulk_bar, "打包导出全部", command=self.export_bundle, kind="ghost",
+                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, bulk_bar, "局域网传输", command=self.open_lan_share, kind="ghost",
+                   width=106, height=32).pack(side="left")
+        label(bulk_bar, self, "扫描子文件夹里的 auth.xml / *.txt", size=9,
+              color="text_muted").pack(side="right", padx=(theme.px(10), theme.px(0)))
+
+        keep_bar = tk.Frame(body, bg=pal["card"])
+        keep_bar.pack(fill="x", pady=(theme.px(8), theme.px(0)))
+        label(keep_bar, self, "备份保留", size=9, color="text_muted").pack(side="left")
+        self.backup_seg = Segmented(
+            self, keep_bar, [("all", "全部"), ("10", "最近 10 份"), ("30d", "最近 30 天")],
+            active=self.settings.get("backup_keep"), command=self._on_backup_keep,
+            pad_x=theme.px(10))
+        self.backup_seg.pack(side="left", padx=(theme.px(8), theme.px(0)))
+        self.vault_history_label = label(keep_bar, self, "还没有导入记录", size=9,
+                                         color="text_muted")
+        self.vault_history_label.pack(side="left", padx=(theme.px(14), theme.px(0)))
+        self.btn_undo_import = PillButton(self, keep_bar, "撤销上次导入",
+                                          command=self.undo_last_import, kind="ghost",
+                                          width=104, height=28)
+        self.btn_undo_import.pack(side="right")
 
         tree_box = tk.Frame(body, bg=pal["card"])
         tree_box.pack(fill="both", expand=True, pady=(theme.px(12), theme.px(0)))
@@ -371,6 +424,7 @@ class App:
         self.btn_note.pack(side="left", padx=(theme.px(0), theme.px(6)))
         actions = (("复制 Key", self.copy_key, "ghost"),
                    ("显示 Key", self.show_key, "ghost"),
+                   ("生成二维码", self.show_qr, "ghost"),
                    ("存到文件夹", self.export_selected_to_dir, "ghost"),
                    ("导出 .hak", self.export_hak, "ghost"),
                    ("导入 .hak", self.import_hak, "ghost"))
@@ -660,6 +714,8 @@ class App:
             button.set_active(name == key)
         if key == "settings":
             self._refresh_data_card()
+        elif key == "tasks":
+            self.refresh_overview()
         self._relayout()
         self.refresh_visuals()
 
@@ -894,15 +950,33 @@ class App:
         threading.Thread(target=fetch, daemon=True).start()
 
         def poll():
+            self._poll_after = None
             if box:
                 done(box[0])
                 return
             try:
-                self.root.after(100, poll)
+                self._poll_after = self.root.after(100, poll)
             except Exception:
                 pass
 
-        self.root.after(100, poll)
+        self._poll_after = self.root.after(100, poll)
+
+    def _auto_update_check(self):
+        self._auto_check = None
+        self.check_update(manual=False)
+
+    def _on_destroy(self, event=None):
+        """Cancel queued callbacks so destroyed tests do not hit dead Tcl commands."""
+        if event is not None and getattr(event, "widget", None) is not self.root:
+            return
+        for name in ("_auto_check", "_poll_after", "_first_job"):
+            pending = getattr(self, name, None)
+            setattr(self, name, None)
+            if pending:
+                try:
+                    self.root.after_cancel(pending)
+                except Exception:
+                    pass
 
     @staticmethod
     def _update_error_text(exc):
@@ -1345,6 +1419,8 @@ class App:
                 cell("source", self._source_label(e.get("source", ""))),
                 cell("created", e.get("created_at", ""))),
                 tags=("odd",) if index % 2 else ())
+        self._refresh_import_history()
+        self.refresh_overview()
         label_text = "账号" if self.vault_kind == "account" else "备份"
         total = len(self.vault.by_kind(self.vault_kind))
         all_total = len(self.vault.entries)
@@ -1409,11 +1485,12 @@ class App:
         def done(key):
             if key is None or token != self._reconcile_token:
                 return
+            self._reconcile_key = key
+            self.refresh_overview()
             ignored = (self.settings.get("reconcile_ignored") or {}).get(g.id, [])
             flag, digest = reconcile.should_prompt(self.vault, key, ignored)
             if not flag:
                 return
-            self._reconcile_key = key
             self._reconcile_digest = digest
             self._reconcile_serial = serial
             self.reconcile_text.configure(
@@ -1516,14 +1593,240 @@ class App:
                 self.log("备份", "已备份原 key：%s" % backup.get("name"))
             target = game.import_key(self.adb, dev.serial, key, g,
                                      lambda m: self.log("导入", m))
-            return target
+            return {"target": target, "backup": backup}
 
-        def done(target):
+        def done(result):
+            target = result.get("target", "")
+            backup = result.get("backup") or {}
+            bulk.record_import(self.settings, self.active_game.id, entry,
+                               backup.get("id", ""))
+            self.settings.save()
+            policy = self.settings.get("backup_keep", "all")
+            removed = bulk.prune_backups(self.vault, policy)
+            if removed:
+                self.log("备份", "按保留策略（%s）清理了 %d 份旧备份"
+                         % (bulk.KEEP_LABELS.get(policy, policy), len(removed)))
             self.refresh_vault()
             self.log("完成", "写入完成：%s，可以打开游戏了。" % target)
             messagebox.showinfo(APP_TITLE, "导入完成，打开游戏即可登录该账号。")
 
         self._bg(worker, done)
+
+    # -- bulk import / export -----------------------------------------
+    def import_folder(self):
+        folder = filedialog.askdirectory(title="选择要扫描的文件夹", parent=self.root)
+        if not folder:
+            return
+        self.log("扫描", "开始扫描 %s" % folder)
+
+        def worker():
+            return keyscan.scan_folder(folder, log=lambda m: self.log("扫描", m))
+
+        self._bg(worker, lambda items: self._import_scanned(items, source=folder))
+
+    def import_clipboard(self):
+        try:
+            text = self.root.clipboard_get()
+        except Exception:
+            messagebox.showinfo(APP_TITLE, "剪贴板里没有文本，先复制一条 AuthKey 试试。")
+            return
+        self._import_scanned(keyscan.parse_text(text), source="剪贴板")
+
+    def _import_scanned(self, items, source=""):
+        items = [i for i in (items or []) if i.get("key")]
+        if not items:
+            messagebox.showinfo(APP_TITLE, "没有找到可导入的 AuthKey。\n\n"
+                                           "支持 auth.xml、*.txt，或直接粘贴一条 key。")
+            self.log("提示", "没有找到可导入的 key")
+            return
+        preview = "\n".join("· %s  %s" % ((i.get("name") or "未命名")[:24],
+                                           i.get("fingerprint", "")) for i in items[:6])
+        more = "" if len(items) <= 6 else "\n… 还有 %d 个" % (len(items) - 6)
+        if not messagebox.askyesno(APP_TITLE, "找到 %d 个 key：\n\n%s%s\n\n全部导入账号库？"
+                                              % (len(items), preview, more)):
+            return
+        added, skipped = bulk.import_items(self.vault, items, source=source)
+        self.vault_kind = "account"
+        if getattr(self, "kind_seg", None):
+            self.kind_seg.set_active("account")
+        self.refresh_vault()
+        self.log("完成", "批量导入：新增 %d 个，跳过 %d 个重复" % (len(added), skipped))
+        messagebox.showinfo(APP_TITLE, "导入完成：新增 %d 个，跳过 %d 个重复。"
+                              % (len(added), skipped))
+
+    def export_bundle(self):
+        if not self.vault:
+            return
+        kind = self.vault_kind
+        word = "账号" if kind == "account" else "备份"
+        if not self.vault.by_kind(kind):
+            messagebox.showinfo(APP_TITLE, "这个分区还没有可以导出的%s。" % word)
+            return
+        stamp = time.strftime("%Y%m%d-%H%M")
+        default = "%s-%s-%s.zip" % (self.active_game.id,
+                                    "accounts" if kind == "account" else "backups", stamp)
+        target = filedialog.asksaveasfilename(
+            title="打包导出全部%s" % word, parent=self.root, defaultextension=".zip",
+            initialdir=self.save_dir or config.app_dir(), initialfile=default,
+            filetypes=[("Zip 压缩包", "*.zip")])
+        if not target:
+            return
+        try:
+            count = bulk.export_all(self.vault, target, self.active_game.label, kind)
+        except Exception as exc:
+            self.log("错误", "打包导出失败：%s" % exc)
+            messagebox.showerror(APP_TITLE, "打包导出失败：%s" % exc)
+            return
+        self.log("完成", "已打包 %d 个%s到 %s" % (count, word, target))
+        messagebox.showinfo(APP_TITLE, "已导出 %d 个%s。\n\n%s\n\n"
+                                       "压缩包里每个%s一个文件夹（AuthKey.txt），另有 manifest.txt 清单。"
+                              % (count, word, target, word))
+
+    # -- 局域网传输 -----------------------------------------------------
+    def _lan_rows(self):
+        rows = []
+        for entry in self.vault.by_kind("account"):
+            try:
+                key = self.vault.key_of(entry).decode("utf-8", "replace")
+            except Exception:
+                continue
+            rows.append({"name": entry.get("name", ""), "note": entry.get("note", ""),
+                         "fingerprint": entry.get("fingerprint", ""),
+                         "created_at": entry.get("created_at", ""), "key": key})
+        return rows
+
+    def open_lan_share(self):
+        if not self.vault:
+            return
+        if not self.vault.by_kind("account"):
+            messagebox.showinfo(APP_TITLE, "账号库还是空的，先导入或提取一个 key 再开传输。")
+            return
+        if getattr(self, "lan_win", None) and self.lan_win.winfo_exists():
+            self.lan_win.lift()
+            self.lan_win.focus_force()
+            return
+        server = lanshare.LanServer(self._lan_rows, self.active_game.label)
+        try:
+            url = server.start()
+        except Exception as exc:
+            self.log("错误", "局域网传输启动失败：%s" % exc)
+            messagebox.showerror(APP_TITLE, "启动失败：%s" % exc)
+            return
+        self.lan = server
+        pal = self.pal
+        win = tk.Toplevel(self.root)
+        self.lan_win = win
+        win.title("局域网传输 - " + self.active_game.label)
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        win.geometry("%dx%d" % (theme.px(560), theme.px(300)))
+        win.resizable(False, False)
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, "在手机上打开这个地址", size=13, weight="bold").pack(
+            anchor="w", padx=theme.px(16), pady=(theme.px(14), theme.px(2)))
+        label(card, self, "手机和电脑连同一个 Wi-Fi，用浏览器打开；地址里已经带了配对码。",
+              size=9, color="text_muted").pack(anchor="w", padx=theme.px(16))
+        url_box = tk.Entry(card, font=theme.mono(10), bd=0, readonlybackground=pal["card_soft"],
+                           fg=pal["text"], highlightthickness=0, justify="left")
+        url_box.insert(0, url)
+        url_box.configure(state="readonly")
+        url_box.pack(fill="x", padx=theme.px(16), pady=(theme.px(12), theme.px(6)),
+                     ipady=theme.px(7))
+        url_box.bind("<FocusIn>", lambda e: url_box.selection_range(0, "end"))
+        label(card, self, "共 %d 个账号 · 关掉这个窗口就停止传输" % len(self._lan_rows()),
+              size=9, color="text_muted").pack(anchor="w", padx=theme.px(16))
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(16), pady=(theme.px(12), theme.px(14)))
+        PillButton(self, row, "复制地址", command=lambda: self._copy_lan_url(url),
+                   kind="primary", width=104, height=32).pack(side="left")
+        PillButton(self, row, "在浏览器打开",
+                   command=lambda: webbrowser.open(url), kind="ghost",
+                   width=118, height=32).pack(side="left", padx=(theme.px(8), theme.px(0)))
+        PillButton(self, row, "停止", command=win.destroy, kind="danger",
+                   width=84, height=32).pack(side="right")
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        win.bind("<Destroy>", self._on_lan_closed, add="+")
+        win.update_idletasks()
+        win.geometry("%dx%d" % (theme.px(560), max(theme.px(300), win.winfo_reqheight())))
+        self.log("传输", "局域网传输已开启：%s" % url)
+
+    def _copy_lan_url(self, url):
+        self.root.clipboard_clear()
+        self.root.clipboard_append(url)
+        messagebox.showinfo(APP_TITLE, "地址已复制，发到手机上用浏览器打开即可。\n\n%s" % url)
+
+    def _on_lan_closed(self, event=None):
+        win = getattr(self, "lan_win", None)
+        if event is not None and event.widget is not win:
+            return
+        server = getattr(self, "lan", None)
+        self.lan = None
+        self.lan_win = None
+        if server is not None:
+            server.stop()
+            self.log("传输", "局域网传输已停止")
+
+    def _on_backup_keep(self, value):
+        self.settings.set("backup_keep", value)
+        self.settings.save()
+        if getattr(self, "backup_seg", None):
+            self.backup_seg.set_active(value)
+        text = bulk.KEEP_LABELS.get(value, value)
+        removed = bulk.prune_backups(self.vault, value)
+        if removed:
+            self.refresh_vault()
+            self.log("设置", "备份保留：%s，清理了 %d 份旧备份" % (text, len(removed)))
+        else:
+            self.log("设置", "备份保留：%s，暂时没有需要清理的备份" % text)
+
+    def undo_last_import(self):
+        if not self.vault:
+            return
+        last = bulk.last_import(self.settings, self.active_game.id)
+        if not last:
+            messagebox.showinfo(APP_TITLE, "还没有导入记录。")
+            return
+        entry = self.vault.get(last.get("entry_id")) if last.get("entry_id") else None
+        if entry is None:
+            bulk.forget_import(self.settings, self.active_game.id)
+            self._refresh_import_history()
+            messagebox.showinfo(APP_TITLE, "那条记录对应的账号已经不在库里，已清掉这条历史。")
+            return
+        if not messagebox.askyesno(APP_TITLE,
+                                   "把「%s」这条账号导入撤销掉？\n\n"
+                                   "只会移除账号库里的这一份，设备上的 key 不受影响。"
+                                   % entry.get("name")):
+            return
+        self.vault.delete(entry["id"])
+        bulk.forget_import(self.settings, self.active_game.id)
+        self.refresh_vault()
+        self.log("完成", "已撤销上次导入：%s" % entry.get("name"))
+
+    def _refresh_import_history(self):
+        widget = getattr(self, "vault_history_label", None)
+        if widget is None or not self.vault:
+            return
+        last = bulk.last_import(self.settings, self.active_game.id)
+        if not last:
+            widget.configure(text="还没有导入记录")
+            return
+        widget.configure(text="上次导入 %s · %s"
+                              % ((last.get("at") or "")[5:16],
+                                 (last.get("name") or "账号")[:16]))
+
+    def refresh_overview(self):
+        stats = getattr(self, "stat_labels", None)
+        if not stats or not self.vault:
+            return
+        key = getattr(self, "_reconcile_key", None)
+        stats["game_key"].configure(text=game.fingerprint(key) if key else "—")
+        last = bulk.last_import(self.settings, self.active_game.id)
+        stats["last_import"].configure(
+            text="%s · %s" % ((last.get("at") or "")[5:16], (last.get("name") or "账号")[:10])
+            if last else "—")
+        stats["accounts"].configure(text=str(len(self.vault.by_kind("account"))))
+        stats["backups"].configure(text=str(len(self.vault.by_kind("backup"))))
 
     def launch_game(self):
         if not self._require(device=True, entry=False):
@@ -1591,6 +1894,72 @@ class App:
         box.pack(fill="both", expand=True)
         PillButton(self, win, "关闭", command=win.destroy, kind="soft",
                    width=96, height=34).pack(pady=(theme.px(0), theme.px(14)))
+
+    def show_qr(self):
+        """Show the selected key as a QR code so a phone can scan the screen."""
+        entry = self.selected_entry()
+        if not entry:
+            messagebox.showwarning(APP_TITLE, "请先在账号库里选中一个账号。")
+            return
+        if not bgfx.PIL_OK:
+            messagebox.showerror(APP_TITLE, "缺少 Pillow 组件，生成不了二维码。")
+            return
+        pal = self.pal
+        name = entry.get("name") or "账号"
+        raw = self.vault.key_of(entry)
+        image = qr.render(raw.decode("utf-8", "replace"))
+        if image is None:
+            messagebox.showerror(APP_TITLE, "生成二维码失败，详见运行日志。")
+            return
+        win = tk.Toplevel(self.root)
+        win.title("二维码 - " + name)
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, name, size=12, color="text").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(16), theme.px(0)))
+        label(card, self, "用手机 App 的「扫一扫」对准这个二维码", size=9,
+              color="text_muted").pack(anchor="w", padx=theme.px(18),
+                                       pady=(theme.px(4), theme.px(12)))
+        holder = tk.Label(card, bg="#FFFFFF", bd=0, highlightthickness=0)
+        holder.pack(padx=theme.px(18))
+        photo = bgfx.ImageTk.PhotoImage(image)
+        holder.configure(image=photo)
+        holder.image = photo  # keep a reference, or Tk drops the image
+        label(card, self, "指纹 %s · %d 字节" % ((entry.get("fingerprint") or "")[:16], len(raw)),
+              size=9, color="text_muted").pack(anchor="w", padx=theme.px(18),
+                                               pady=(theme.px(12), theme.px(0)))
+        label(card, self, "别把这个码发给不认识的人——等于把账号交出去。", size=9,
+              color="text_faint").pack(anchor="w", padx=theme.px(18),
+                                       pady=(theme.px(2), theme.px(0)))
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(18), pady=(theme.px(14), theme.px(16)))
+        PillButton(self, row, "另存为 PNG", command=lambda: self.save_qr(entry),
+                   kind="soft", width=112, height=34).pack(side="left")
+        PillButton(self, row, "关闭", command=win.destroy, kind="ghost",
+                   width=88, height=34).pack(side="right")
+        width = max(theme.px(400), image.width + theme.px(70))
+        win.geometry("%dx%d" % (width, win.winfo_reqheight()))
+        win.minsize(width, win.winfo_reqheight())
+
+    def save_qr(self, entry):
+        if entry is None:
+            return
+        default = (entry.get("name") or "account").replace("/", "_") + "-qr.png"
+        path = filedialog.asksaveasfilename(
+            parent=self.root, defaultextension=".png", initialfile=default,
+            filetypes=[("PNG 图片", "*.png")])
+        if not path:
+            return
+        try:
+            qr.save_png(self.vault.key_of(entry).decode("utf-8", "replace"), path)
+        except Exception as exc:
+            self.log("错误", "二维码保存失败：%s" % exc)
+            messagebox.showerror(APP_TITLE, "保存失败：%s" % exc)
+            return
+        self.log("账号", "已保存二维码 %s" % path)
+        messagebox.showinfo(APP_TITLE, "二维码已保存：\n%s" % path)
 
     def export_selected_to_dir(self):
         entry = self.selected_entry()
