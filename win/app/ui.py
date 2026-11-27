@@ -19,6 +19,7 @@ from . import applock
 from . import bgfx
 from . import bulk
 from . import config
+from . import dialogs
 from . import game
 from . import keyscan
 from . import lanshare
@@ -27,11 +28,10 @@ from . import reconcile
 from . import theme
 from . import updater
 from . import vault as vault_mod
-from .widgets import (MiniSlider, NavButton, PillButton, RoundCard, SectionTitle,
-                      Segmented, chip, entry, label)
+from .widgets import (DeviceList, MiniSlider, NavButton, PillButton, RoundCard,
+                      SectionTitle, Segmented, chip, entry, label)
 
-EMULATOR_PORTS = [7555, 16384, 5555, 62001, 62025, 21503, 5557, 5559,
-                  5565, 16416, 16448, 58526, 7556, 62026]
+EMULATOR_PORTS = list(config.EMULATOR_PORTS)
 
 APP_TITLE = theme.APP_NAME
 # Authored at 96 dpi; _relayout scales them through theme.px() so hi-dpi
@@ -63,6 +63,7 @@ class App:
 
         self.adb = None
         self.devices = []
+        self._selected_serial = self.settings.get("preferred_serial") or ""
         self.vault = None
         self.vaults = {}
         self.update_asset = None
@@ -370,6 +371,7 @@ class App:
             self.stat_labels[key] = value
 
         device_card = RoundCard(self)
+        self._device_card = device_card
         body = device_card.body
         head = SectionTitle.build(self, body, "① 选择设备", "USB 连接手机，或先启动模拟器")
         head.pack(fill="x")
@@ -380,10 +382,16 @@ class App:
         self.game_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
         self.adb_chip = chip(right, self, "正在检测 adb…", tone="muted")
         self.adb_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
-        PillButton(self, right, "扫描", command=self.scan_emulators, kind="ghost",
-                   width=64, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
-        PillButton(self, right, "刷新", command=self.refresh_devices, kind="ghost",
-                   width=64, height=32).pack(side="left")
+
+        summary = tk.Frame(body, bg=pal["card"])
+        summary.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        label(summary, self, "当前设备", size=9, color="text_muted").pack(side="left")
+        self.cur_dev_name = label(summary, self, "正在查找设备…", size=11, weight="bold")
+        self.cur_dev_name.pack(side="left", padx=(theme.px(8), theme.px(8)))
+        self.cur_dev_chip = chip(summary, self, "未连接", tone="muted")
+        self.cur_dev_chip.pack(side="left")
+        self.cur_dev_note = label(summary, self, "", size=9, color="text_faint")
+        self.cur_dev_note.pack(side="left", padx=(theme.px(10), theme.px(0)))
 
         self.reconcile_bar = tk.Frame(body, bg=pal["warn_soft"])
         inner = tk.Frame(self.reconcile_bar, bg=pal["warn_soft"])
@@ -397,30 +405,28 @@ class App:
         PillButton(self, inner, "更新已有账号", command=self.update_reconcile_entry, kind="soft",
                    width=110, height=28, bg="warn_soft").pack(side="right", padx=(theme.px(0), theme.px(8)))
 
-        tree_box = tk.Frame(body, bg=pal["card"])
-        self.tree_box = tree_box
-        tree_box.pack(fill="both", expand=True, pady=(theme.px(12), theme.px(0)))
-        cols = ("label", "state", "root", "serial")
-        self.dev_tree = ttk.Treeview(tree_box, columns=cols, show="headings", height=4,
-                                     selectmode="browse")
-        widths = (("label", "设备", 300), ("state", "状态", 90),
-                  ("root", "Root", 70), ("serial", "序列号", 220))
-        for col, title, width in widths:
-            self.dev_tree.heading(col, text=title, anchor="w")
-            self.dev_tree.column(col, width=theme.px(width), anchor="w", stretch=(col == "label"))
-        self.dev_tree.pack(side="left", fill="both", expand=True)
-        sb = ttk.Scrollbar(tree_box, orient="vertical", command=self.dev_tree.yview)
-        sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
-        self.dev_sb = sb
-        self.dev_tree.configure(yscrollcommand=sb.set)
-        self.dev_tree.tag_configure("odd", background=pal["card_sunken"])
-        self.device_hint = label(body, self, "正在检测设备…", size=9, color="text_muted")
-        self.device_hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
+        self.device_list = DeviceList(self, body, command=self._on_device_row)
+        self.tree_box = self.device_list
+        self.device_list.pack(fill="both", expand=True, pady=(theme.px(10), theme.px(0)))
 
-        self.device_empty = tk.Frame(tree_box, bg=pal["card"])
-        label(self.device_empty, self, "还没有发现设备", size=13, weight="bold").pack(pady=(theme.px(0), theme.px(6)))
-        label(self.device_empty, self, "USB 接上手机并在弹窗里允许调试，或先启动模拟器再点「扫描模拟器」",
-              size=9, color="text_muted").pack()
+        connect_row = tk.Frame(body, bg=pal["card"])
+        connect_row.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        PillButton(self, connect_row, "扫描模拟器", command=self.scan_emulators, kind="ghost",
+                   width=92, height=30).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, connect_row, "刷新", command=self.refresh_devices, kind="ghost",
+                   width=64, height=30).pack(side="left", padx=(theme.px(0), theme.px(14)))
+        label(connect_row, self, "连接地址", size=9, color="text_muted").pack(side="left")
+        self.addr_var = tk.StringVar()
+        self.addr_entry = entry(connect_row, self, self.addr_var, width=22)
+        self.addr_entry.pack(side="left", padx=(theme.px(10), theme.px(8)), ipady=theme.px(4))
+        self.addr_entry.bind("<Return>", lambda _e: self.connect_address())
+        PillButton(self, connect_row, "连接", command=self.connect_address, kind="ghost",
+                   width=64, height=30).pack(side="left")
+        label(connect_row, self, "例 127.0.0.1:16384，也可以只填端口号", size=9,
+              color="text_faint").pack(side="left", padx=(theme.px(10), theme.px(0)))
+
+        self.device_hint = label(body, self, "正在检测设备…", size=9, color="text_muted")
+        self.device_hint.pack(anchor="w", pady=(theme.px(8), theme.px(0)))
 
         action_card = RoundCard(self)
         body = action_card.body
@@ -429,11 +435,13 @@ class App:
         row.pack(fill="x", pady=(theme.px(12), theme.px(0)))
         self.btn_extract = PillButton(self, row, "提取 %s 的 key" % self.active_game.label,
                                       command=self.do_extract,
-                                      kind="primary", width=196, height=44)
+                                      kind="primary", width=196, height=44,
+                                      autosize=True)
         self.btn_extract.pack(side="left")
         self.btn_import = PillButton(self, row, "导入到 %s" % self.active_game.label,
                                      command=self.do_import,
-                                     kind="soft", width=180, height=44)
+                                     kind="soft", width=180, height=44,
+                                     autosize=True)
         self.btn_import.pack(side="left", padx=(theme.px(10), theme.px(0)))
         PillButton(self, row, "打开游戏", command=self.launch_game, kind="ghost",
                    width=104, height=44).pack(side="left", padx=(theme.px(10), theme.px(0)))
@@ -455,7 +463,7 @@ class App:
         hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
 
         self.pages["tasks"] = [(overview, max(theme.px(96), overview.required_height())),
-                               (device_card, None),
+                               (device_card, self._device_card_height),
                                (action_card, max(theme.px(208), action_card.required_height()))]
 
     # -- page: vault ---------------------------------------------------
@@ -552,6 +560,57 @@ class App:
     # -- page: settings ------------------------------------------------
     def _build_settings_page(self):
         pal = self.pal
+
+        conn_card = RoundCard(self)
+        cb = conn_card.body
+        SectionTitle.build(self, cb, "连接",
+                           "扫描哪些端口、要不要自动连；具体用哪台设备在任务页点选").pack(fill="x")
+
+        line = tk.Frame(cb, bg=pal["card"])
+        line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        label(line, self, "只显示模拟器", size=10, weight="bold").pack(side="left")
+        label(line, self, "隐藏 USB 接的手机，只看模拟器", size=9,
+              color="text_muted").pack(side="left", padx=(theme.px(10), theme.px(0)))
+        self.only_emu_seg = Segmented(
+            self, line, [("off", "关"), ("on", "开")],
+            active="on" if self.settings.get("only_emulators") else "off",
+            command=self._on_only_emulators, pad_x=theme.px(12))
+        self.only_emu_seg.pack(side="right")
+
+        line = tk.Frame(cb, bg=pal["card"])
+        line.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        label(line, self, "启动时自动连接", size=10, weight="bold").pack(side="left")
+        label(line, self, "打开软件就扫描一遍模拟器端口", size=9,
+              color="text_muted").pack(side="left", padx=(theme.px(10), theme.px(0)))
+        self.auto_connect_seg = Segmented(
+            self, line, [("off", "关"), ("on", "开")],
+            active="on" if self.settings.get("auto_connect") else "off",
+            command=self._on_auto_connect, pad_x=theme.px(12))
+        self.auto_connect_seg.pack(side="right")
+
+        line = tk.Frame(cb, bg=pal["card"])
+        line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        label(line, self, "模拟器端口", size=10, weight="bold").pack(side="left")
+        label(line, self, "MuMu 16384 · 夜神 62001 · 雷电 5555/5557 · 蓝叠 5555",
+              size=9, color="text_faint").pack(side="left", padx=(theme.px(10), 0))
+        self.btn_rescan = PillButton(self, line, "重新扫描", command=self.scan_emulators,
+                                     kind="ghost", width=92, height=30)
+        self.btn_rescan.pack(side="right")
+        self.ports_var = tk.StringVar(value=self.settings.get("emulator_ports") or "")
+        self.ports_entry = entry(cb, self, textvariable=self.ports_var, width=34,
+                                 bg="card_soft")
+        self.ports_entry.pack(fill="x", pady=(theme.px(8), theme.px(0)), ipady=theme.px(4))
+        self.ports_entry.bind("<Return>", lambda _e: self._on_ports_change())
+        self.ports_entry.bind("<FocusOut>", lambda _e: self._on_ports_change())
+
+        line = tk.Frame(cb, bg=pal["card"])
+        line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        label(line, self, "记住的设备", size=10, weight="bold").pack(side="left")
+        self.conn_device_label = label(line, self, "-", size=9, color="text_muted")
+        self.conn_device_label.pack(side="left", padx=(theme.px(10), theme.px(0)))
+        PillButton(self, line, "清除", command=self.forget_device, kind="ghost",
+                   width=70, height=28).pack(side="right")
+
         card = RoundCard(self)
         body = card.body
         SectionTitle.build(self, body, "外观 · 背景图",
@@ -662,6 +721,17 @@ class App:
             value = label(line, self, "-", size=9, color="text")
             value.pack(side="left", padx=(theme.px(6), theme.px(0)))
             self.data_rows[key] = value
+        about_line = tk.Frame(db, bg=pal["card"])
+        about_line.pack(fill="x", pady=(theme.px(7), theme.px(0)))
+        label(about_line, self, "关于", size=9, color="text_muted", width=10,
+              anchor="w").pack(side="left")
+        self.about_version_label = label(about_line, self, "版本 v" + theme.APP_VERSION,
+                                        size=9, color="text")
+        self.about_version_label.pack(side="left", padx=(theme.px(6), theme.px(0)))
+        PillButton(self, about_line, "项目主页",
+                   command=lambda: self.open_url(theme.REPO_URL), kind="ghost",
+                   width=88, height=26).pack(side="right")
+
         lock_line = tk.Frame(db, bg=pal["card"])
         lock_line.pack(fill="x", pady=(theme.px(7), theme.px(0)))
         label(lock_line, self, "应用锁", size=9, color="text_muted", width=10,
@@ -679,7 +749,8 @@ class App:
         PillButton(self, data_actions, "复制路径", command=self.copy_data_dir, kind="ghost",
                    width=88, height=32).pack(side="left", padx=(theme.px(8), theme.px(0)))
 
-        self.pages["settings"] = [(card, max(theme.px(356), card.required_height())),
+        self.pages["settings"] = [(conn_card, max(theme.px(252), conn_card.required_height())),
+                                  (card, max(theme.px(356), card.required_height())),
                                   (update_card,
                                    max(theme.px(150), update_card.required_height())),
                                   (data_card, None)]
@@ -732,6 +803,22 @@ class App:
         self.log_card = card
 
     # -- layout --------------------------------------------------------
+    @staticmethod
+    def _spec_height(spec):
+        """Page specs may carry a fixed height or a callable that measures it."""
+        return spec() if callable(spec) else spec
+
+    def _device_card_height(self):
+        card = getattr(self, "_device_card", None)
+        if card is None:
+            return theme.px(268)
+        return max(theme.px(268), card.required_height())
+
+    def _device_list_resized(self):
+        """Grow/shrink the device card when the list changes length."""
+        if getattr(self, "_device_card", None) is not None:
+            self._relayout()
+
     def _relayout(self):
         width = self.canvas.winfo_width()
         height = self.canvas.winfo_height()
@@ -741,7 +828,7 @@ class App:
         page_pad = theme.px(PAGE_PAD)
         gap = theme.px(GAP)
         specs = self.pages.get(self.page, ())
-        fixed = sum(h for _, h in specs if h)
+        fixed = sum(self._spec_height(h) for _, h in specs if h)
         fills = [card for card, h in specs if not h]
         need = 0
         for card in fills:
@@ -792,7 +879,7 @@ class App:
                 fill_h = 0
             y = page_pad - offset
             for card, h in page_specs:
-                card_h = h or fill_h
+                card_h = self._spec_height(h) or fill_h
                 card.layout(x0, y, content_w, card_h)
                 y += card_h + gap
 
@@ -886,8 +973,12 @@ class App:
                 self.log("错误", "账号库加载失败（%s）：%s" % (g.label, exc))
         self.vault = self.vaults.get(self.active_game.id)
         self.refresh_vault()
+        self._refresh_conn_card()
         if self.adb:
-            self.refresh_devices()
+            if self.settings.get("auto_connect"):
+                self.scan_emulators()
+            else:
+                self.refresh_devices()
 
     def _set_adb_chip(self, text, tone):
         tones = {"ok": ("ok_soft", "ok"), "err": ("err_soft", "err"),
@@ -1077,6 +1168,8 @@ class App:
             self.update_asset = asset
             self.update_status.configure(text="发现新版本 %s" % tag, fg=self.pal["accent"])
             self.btn_install_update.pack(side="right")
+            if updater.is_forced(result):
+                self.show_force_update(tag)
 
         # Fetch on a worker thread, but deliver on the Tk thread through a
         # poller scheduled here: Tk refuses cross-thread calls when the
@@ -1127,6 +1220,38 @@ class App:
         if "urlopen" in text or "getaddrinfo" in text or "Connection" in text:
             return "连不上 GitHub（网络不通）"
         return text
+
+    def show_force_update(self, tag):
+        """重要/安全修复：不给「稍后」，不更新就用不了。"""
+        pal = self.pal
+        win = tk.Toplevel(self.root)
+        win.title("必须更新")
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", lambda: None)
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, "必须更新到 %s" % tag, size=12, color="text").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(16), theme.px(6)))
+        label(card, self,
+              "这一版修的是重要问题（安全或数据相关），旧版会一直带着它跑，\n"
+              "所以这个版本不能跳过。装好之后账号库、备份、导出路径都还在原地。\n"
+              "如果自动更新失败，点「手动下载」拿压缩包覆盖安装。",
+              size=9, color="warn", wraplength=theme.px(420), justify="left").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(0), theme.px(14)))
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(18), pady=(theme.px(0), theme.px(16)))
+        PillButton(self, row, "立即更新", command=self.do_update, kind="primary",
+                   width=120, height=34).pack(side="left")
+        PillButton(self, row, "手动下载", kind="ghost", width=104, height=34,
+                   command=lambda: webbrowser.open(
+                       "https://github.com/fenghuo6183/HousamoAuthKeyManager/releases/latest")
+                   ).pack(side="left", padx=(theme.px(8), 0))
+        PillButton(self, row, "退出程序", command=self.root.destroy, kind="ghost",
+                   width=96, height=34).pack(side="right")
+        win.geometry("%dx%d" % (theme.px(500), win.winfo_reqheight()))
+        self.log("更新", "这是强制更新版本 %s，已弹出必须更新的提示" % tag)
 
     def do_update(self):
         if not self.update_asset:
@@ -1245,6 +1370,7 @@ class App:
         rows["adb"].configure(text="就绪" if self.adb else "不可用（缺少 platform-tools）",
                               fg=self.pal["ok"] if self.adb else self.pal["err"])
         self._refresh_lock_row()
+        self._refresh_conn_card()
 
     def _refresh_lock_row(self):
         if not getattr(self, "lock_value", None):
@@ -1364,17 +1490,104 @@ class App:
             btn.set_enabled(enabled)
 
     # -- devices -------------------------------------------------------
+    def _device_by_serial(self, serial):
+        for dev in self.devices:
+            if dev.serial == serial:
+                return dev
+        return None
+
     def selected_device(self):
-        sel = self.dev_tree.selection()
-        if sel:
-            serial = self.dev_tree.item(sel[0], "values")[3]
-            for dev in self.devices:
-                if dev.serial == serial:
-                    return dev
+        dev = self._device_by_serial(self._selected_serial)
+        if dev is not None:
+            return dev
+        remembered = self.settings.get("preferred_serial")
+        dev = self._device_by_serial(remembered)
+        if dev is not None:
+            return dev
         for dev in self.devices:
             if dev.online:
                 return dev
-        return None
+        return self.devices[0] if self.devices else None
+
+    def _on_device_row(self, device):
+        self.select_device(device.serial)
+
+    def select_device(self, serial, persist=True, refresh_reconcile=True):
+        """Switch the device every action uses; remember it across restarts."""
+        dev = self._device_by_serial(serial)
+        if dev is None:
+            return
+        self._selected_serial = serial
+        if persist:
+            self.settings.set("preferred_serial", serial)
+            self._refresh_conn_card()
+            self.log("设备", "已切换到 %s（%s）" % (dev.short_label, serial))
+        if getattr(self, "device_list", None) is not None:
+            self.device_list.set_selected(serial)
+        self._refresh_current_device()
+        self._apply_device_state(dev)
+        if refresh_reconcile:
+            self.refresh_reconcile()
+
+    def _pick_device(self, devices):
+        """Keep the user's pick; a remembered device only wins when online."""
+        online = [d for d in devices if d.online]
+        for serial in (self._selected_serial, self.settings.get("preferred_serial")):
+            if not serial:
+                continue
+            for dev in online:
+                if dev.serial == serial:
+                    return dev
+        if online:
+            return online[0]
+        for serial in (self._selected_serial, self.settings.get("preferred_serial")):
+            dev = self._device_by_serial(serial)
+            if dev is not None and dev in devices:
+                return dev
+        return devices[0] if devices else None
+
+    def _paint_chip(self, label_widget, text, tone="muted"):
+        tones = {"ok": ("ok_soft", "ok"), "err": ("err_soft", "err"),
+                 "accent": ("accent_soft", "accent"), "muted": ("card_soft", "text_muted")}
+        bg, fg = tones.get(tone, tones["muted"])
+        try:
+            label_widget.configure(text=text, bg=self.pal[bg], fg=self.pal[fg])
+        except Exception:
+            pass
+
+    def _extract_label(self, dev=None):
+        dev = dev or self.selected_device()
+        if dev is None:
+            return "提取 %s 的 key" % self.active_game.label
+        return "提取 %s 的 key" % dev.short_label
+
+    def _apply_device_state(self, dev):
+        self.btn_extract.set_text(self._extract_label(dev))
+        if dev is None:
+            self.btn_extract.set_enabled(False)
+            return
+        # None = the probe has not answered yet; stay clickable rather than
+        # blocking the user while we check.
+        self.btn_extract.set_enabled(bool(dev.online) and dev.game_installed is not False)
+
+    def _refresh_current_device(self):
+        dev = self.selected_device()
+        if dev is None:
+            self.cur_dev_name.configure(text="没有可用设备")
+            self._paint_chip(self.cur_dev_chip, "未连接", "muted")
+            self.cur_dev_note.configure(text="接上手机或启动模拟器后点「扫描模拟器」")
+            return
+        self.cur_dev_name.configure(text=dev.short_label)
+        self._paint_chip(self.cur_dev_chip, "在线" if dev.online else "离线",
+                         "ok" if dev.online else "err")
+        bits = [dev.serial]
+        if dev.game_installed is True:
+            bits.append("已装游戏")
+        elif dev.game_installed is False:
+            bits.append("未装游戏")
+        if dev.root == "\u662f":
+            bits.append("Root")
+        self.cur_dev_note.configure(text=" \u00b7 ".join(bits))
 
     # -- game switching ------------------------------------------------
     def switch_game(self, game_id):
@@ -1394,7 +1607,7 @@ class App:
         self.vault = vault
         if getattr(self, "game_seg", None):
             self.game_seg.set_active(g.id)
-        self.btn_extract.set_text("提取 %s 的 key" % g.label)
+        self._apply_device_state(self.selected_device())
         self.btn_import.set_text("导入到 %s" % g.label)
         self._update_device_hint()
         self.refresh_vault()
@@ -1406,50 +1619,78 @@ class App:
     def _update_device_hint(self):
         try:
             if not self.devices:
-                self.device_hint.configure(text="没有发现设备")
-            else:
                 self.device_hint.configure(
-                    text="已发现 %d 台设备，选中一台后点下面「提取 %s 的 key」"
-                         % (len(self.devices), self.active_game.label))
+                    text="没有发现设备。可以点「扫描模拟器」，或在下面填地址直接连。")
+                return
+            online = sum(1 for dev in self.devices if dev.online)
+            text = ("已发现 %d 台设备（%d 台在线），点一行切换；提取、导入、启动游戏都用选中的那台"
+                    % (len(self.devices), online))
+            if self.settings.get("only_emulators"):
+                hidden = [dev for dev in self.devices if not dev.is_emulator]
+                if hidden:
+                    text += "。已隐藏 %d 台 USB 设备（设置里可关）" % len(hidden)
+            self.device_hint.configure(text=text)
         except Exception:
             pass
 
     def _check_game_installed(self):
-        online = [d for d in self.devices if d.online]
-        if not self.adb or not online:
+        """Probe every online row, so no device is stuck on 「检测游戏…」."""
+        if not self.adb:
             return
         g = self.active_game
-        serial = online[0].serial
+        for dev in list(self.devices):
+            if not dev.online:
+                continue
+            serial = dev.serial
 
-        def runner():
-            ok = game.game_installed(self.adb, serial, g)
-            self.root.after(0, self._installed_done, g.id, ok)
+            def runner(serial=serial):
+                try:
+                    ok = game.game_installed(self.adb, serial, g)
+                except Exception:
+                    ok = None
+                self.root.after(0, self._installed_done, g.id, serial, ok)
 
-        threading.Thread(target=runner, daemon=True).start()
+            threading.Thread(target=runner, daemon=True).start()
 
-    def _installed_done(self, game_id, ok):
+    def _installed_done(self, game_id, serial, ok):
         if game_id != self.active_game.id:
             return
-        self.btn_extract.set_enabled(bool(ok))
-        if not ok:
-            self.log("设备", "这台设备上没有安装 %s" % self.active_game.label)
-
-    def refresh_devices(self):
+        dev = self._device_by_serial(serial)
+        if dev is not None:
+            dev.game_installed = bool(ok) if ok is not None else None
         try:
-            self.device_empty.place_forget()
-            self.dev_sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
+            self.device_list.set_game_state(serial, ok)
         except Exception:
             pass
+        if dev is not None and dev.serial == self._selected_serial:
+            self._apply_device_state(dev)
+            self._refresh_current_device()
+        if (ok is False and dev is not None
+                and dev.serial == self._selected_serial):
+            # Probe runs for every row; only nag about the device in use, once.
+            seen = getattr(self, "_missing_logged", None)
+            if seen is None:
+                seen = self._missing_logged = set()
+            token = (game_id, serial)
+            if token not in seen:
+                seen.add(token)
+                self.log("设备", "%s 上没有安装 %s，换一台或先装好游戏"
+                         % (dev.short_label, self.active_game.label))
+
+    def refresh_devices(self):
         if not self.adb:
-            messagebox.showerror(APP_TITLE, "adb 不可用，请检查 platform-tools 是否放在 assets/platform-tools 下。")
+            # No modal here: this also runs on startup and after toggles.
+            self._set_adb_chip("adb 不可用", "err")
+            self.log("错误", "adb 不可用，请检查 platform-tools 是否放在 assets/platform-tools 下")
             return
         self._set_adb_chip("正在检测设备…", "muted")
         self._bg(self._devices_worker, self._devices_done)
 
     def _devices_worker(self):
-        devices = [d for d in self.adb.devices()]
+        devices = list(self.adb.devices())
         for dev in devices:
             dev.root = "?"
+            dev.game_installed = None
             if dev.online:
                 try:
                     dev.root = "是" if self.adb.su_available(dev.serial) else "否"
@@ -1458,53 +1699,183 @@ class App:
         return devices
 
     def _devices_done(self, devices):
-        self.devices = devices
-        self.dev_tree.delete(*self.dev_tree.get_children())
-        cols = ("label", "state", "root", "serial")
-        for index, dev in enumerate(devices):
-            raw = (dev.label, dev.state, dev.root, dev.serial)
-            values = tuple(self._fit_cell(self.dev_tree, col, val)
-                           for col, val in zip(cols, raw))
-            self.dev_tree.insert("", "end", values=values,
-                                 tags=("odd",) if index % 2 else ())
-        if devices:
-            self.dev_tree.selection_set(self.dev_tree.get_children()[0])
-            online = sum(1 for d in devices if d.online)
-            self._set_adb_chip("%d 台在线" % online if online else "%d 台离线" % len(devices),
+        self.devices = list(devices)
+        only = bool(self.settings.get("only_emulators"))
+        visible = [dev for dev in self.devices if not only or dev.is_emulator]
+        try:
+            self.device_list.set_devices(visible, self._selected_serial)
+        except Exception:
+            pass
+        pending = getattr(self, "_pending_select", "")
+        if pending:
+            self._pending_select = ""
+            for dev in visible:
+                if dev.serial == pending:
+                    pick = dev
+                    self.select_device(dev.serial, persist=True, refresh_reconcile=False)
+                    break
+            else:
+                pick = self._pick_device(visible)
+                if pick is not None:
+                    self.select_device(pick.serial, persist=False, refresh_reconcile=False)
+                else:
+                    self._selected_serial = ""
+                    self._refresh_current_device()
+        else:
+            pick = self._pick_device(visible)
+            if pick is not None:
+                self.select_device(pick.serial, persist=False, refresh_reconcile=False)
+            else:
+                self._selected_serial = ""
+                self._refresh_current_device()
+        online = sum(1 for dev in visible if dev.online)
+        if visible:
+            self._set_adb_chip("%d 台在线" % online if online else "%d 台离线" % len(visible),
                                "ok" if online else "warn")
-            self._update_device_hint()
-            self.dev_sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
-            self.device_empty.place_forget()
-            self.log("设备", "发现 %d 台设备" % len(devices))
+            self.log("设备", "发现 %d 台设备" % len(visible))
         else:
             self._set_adb_chip("未发现设备", "warn")
-            self._update_device_hint()
-            self.dev_sb.pack_forget()
-            self.device_empty.place(relx=0.5, rely=0.42, anchor="center")
-            self.log("设备", "没有发现设备。请打开 USB 调试，或先启动模拟器再点「扫描模拟器」。")
+            if self.devices:
+                self.log("设备", "设备都被「只显示模拟器」过滤掉了，可以在设置里关掉")
+            else:
+                self.log("设备", "没有发现设备。请打开 USB 调试，或先启动模拟器再点「扫描模拟器」。")
+        self._update_device_hint()
         self._check_game_installed()
         self.refresh_reconcile()
 
+    # -- emulator discovery --------------------------------------------
+    @staticmethod
+    def _parse_ports(raw):
+        ports = []
+        for part in str(raw or "").replace(";", ",").replace(" ", ",").split(","):
+            part = part.strip()
+            if part.isdigit() and 0 < int(part) < 65536:
+                value = int(part)
+                if value not in ports:
+                    ports.append(value)
+        return ports
+
+    def emulator_ports(self):
+        raw = self.settings.get("emulator_ports") or ""
+        return self._parse_ports(raw) or list(EMULATOR_PORTS)
+
+    def _on_ports_change(self):
+        raw = self.ports_var.get() if getattr(self, "ports_var", None) is not None else ""
+        ports = self._parse_ports(raw) or list(EMULATOR_PORTS)
+        text = ",".join(str(port) for port in ports)
+        self.settings.set("emulator_ports", text)
+        try:
+            if self.ports_var.get() != text:
+                self.ports_var.set(text)
+        except Exception:
+            pass
+        self.log("设置", "模拟器端口：%s" % text)
+        return ports
+
     def scan_emulators(self):
         if not self.adb:
-            messagebox.showerror(APP_TITLE, "adb 不可用。")
+            self.log("错误", "adb 不可用，没法扫描模拟器")
             return
+        ports = self.emulator_ports()
         self._set_adb_chip("正在扫描模拟器…", "muted")
 
         def worker():
-            hits = 0
-            for port in EMULATOR_PORTS:
-                ok, text = self.adb.connect("127.0.0.1:%d" % port)
-                if ok:
-                    hits += 1
-                    self.log("模拟器", "已连接 127.0.0.1:%d" % port)
-            return hits
+            # Probe a handful at a time: 14 serial connects take minutes.
+            hits = []
+            lock = threading.Lock()
+            queue = list(ports)
+
+            def probe():
+                while True:
+                    with lock:
+                        if not queue:
+                            return
+                        port = queue.pop(0)
+                    try:
+                        ok, _text = self.adb.connect("127.0.0.1:%d" % port)
+                    except Exception:
+                        ok = False
+                    if ok:
+                        with lock:
+                            hits.append(port)
+
+            threads = [threading.Thread(target=probe, daemon=True)
+                       for _ in range(max(1, min(6, len(ports))))]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            return sorted(hits)
 
         def done(hits):
-            self.log("模拟器", "扫描结束，新连接 %d 个" % hits)
+            for port in hits or ():
+                self.log("模拟器", "已连接 127.0.0.1:%d" % port)
+            self.log("模拟器", "扫描结束，新连接 %d 个" % len(hits or []))
             self.refresh_devices()
 
         self._bg(worker, done)
+
+    def connect_address(self):
+        raw = self.addr_var.get() if getattr(self, "addr_var", None) is not None else ""
+        addr = adb_mod.normalize_address(raw)
+        if not addr:
+            self.log("提示", "先填一个地址，例如 127.0.0.1:16384")
+            return
+        if not self.adb:
+            self.log("错误", "adb 不可用，没法连接设备")
+            return
+        self._set_adb_chip("正在连接 %s…" % addr, "muted")
+
+        def worker():
+            ok, text = self.adb.connect(addr)
+            return ok, text, addr
+
+        def done(result):
+            ok, text, target = result
+            if ok:
+                self.log("设备", "已连接 %s" % target)
+                self._pending_select = target
+                self.addr_var.set("")
+            else:
+                self.log("失败", "连接 %s 失败：%s" % (target, text))
+            self.refresh_devices()
+
+        self._bg(worker, done)
+
+    def forget_device(self):
+        self.settings.set("preferred_serial", "")
+        self._selected_serial = ""
+        if getattr(self, "device_list", None) is not None:
+            self.device_list.set_selected("")
+        self._refresh_conn_card()
+        self.log("设置", "已清除记住的设备，下次启动不再自动选它")
+
+    def _on_only_emulators(self, key):
+        self.settings.set("only_emulators", key == "on")
+        self.log("设置", "只显示模拟器：%s" % ("开" if key == "on" else "关"))
+        self.refresh_devices()
+
+    def _on_auto_connect(self, key):
+        self.settings.set("auto_connect", key == "on")
+        self.log("设置", "启动时自动连接模拟器：%s" % ("开" if key == "on" else "关"))
+
+    def _refresh_conn_card(self):
+        widget = getattr(self, "conn_device_label", None)
+        if widget is None:
+            return
+        serial = self.settings.get("preferred_serial") or ""
+        if serial:
+            dev = self._device_by_serial(serial)
+            text = "%s · %s" % (dev.short_label if dev else "未连接", serial)
+        else:
+            text = "还没记，点任务页的设备行就会记住"
+        widget.configure(text=text)
+
+    def open_url(self, url):
+        try:
+            webbrowser.open(url)
+        except Exception:
+            self.log("提示", "没法打开浏览器，地址是：%s" % url)
 
     # -- vault view ----------------------------------------------------
     def _cell_font(self):
@@ -1638,9 +2009,11 @@ class App:
         return self.vault.get(sel[0])
 
     def _require(self, device=True, entry=True):
-        if device and not self.selected_device():
-            messagebox.showwarning(APP_TITLE, "请先选择一台在线设备。")
-            return False
+        if device:
+            dev = self.selected_device()
+            if dev is None or not dev.online:
+                messagebox.showwarning(APP_TITLE, "请先在任务页选一台在线的设备。")
+                return False
         if entry and not self.selected_entry():
             messagebox.showwarning(APP_TITLE, "请先在账号库里选中一个账号。")
             return False
@@ -1655,11 +2028,11 @@ class App:
         self._reconcile_key = None
         if not self.adb:
             return
-        online = [d for d in self.devices if d.online]
-        if len(online) != 1:
+        dev = self.selected_device()
+        if dev is None or not dev.online:
             return
         g = self.active_game
-        serial = online[0].serial
+        serial = dev.serial
         token = getattr(self, "_reconcile_token", 0) + 1
         self._reconcile_token = token
 
@@ -1734,9 +2107,13 @@ class App:
                                              device=dev.serial, kind="account",
                                              game=self.active_game.id)
             if created:
-                name = simpledialog.askstring(APP_TITLE, "给这个账号起个名字：", parent=self.root)
-                if name and name.strip():
-                    self.vault.update(entry["id"], name=name.strip())
+                taken = [row.get("name") for row in self.vault.by_kind("account")]
+                name = dialogs.ask_text(
+                    self, "给这个账号起个名字",
+                    hint="存进账号库，以后按这个名字找；留空也行，之后在账号库里改",
+                    initial=entry.get("name") or "", max_len=24, taken=taken)
+                if name:
+                    self.vault.update(entry["id"], name=name)
             else:
                 self.log("提取", "这个 key 已经在账号库里了：%s" % entry.get("name"))
             self.refresh_vault()
@@ -2028,10 +2405,14 @@ class App:
         if entry.get("kind") == "backup":
             messagebox.showinfo(APP_TITLE, "备份条目不能改名；需要的话先导入回游戏，再存成账号。")
             return
-        name = simpledialog.askstring(APP_TITLE, "新名称：", initialvalue=entry.get("name", ""), parent=self.root)
-        if name and name.strip():
-            self.vault.update(entry["id"], name=name.strip())
+        taken = [row.get("name") for row in self.vault.by_kind(entry.get("kind") or "account")]
+        name = dialogs.ask_text(
+            self, "重命名账号", hint="只改显示名，不影响 key 本身",
+            initial=entry.get("name", ""), max_len=24, taken=taken)
+        if name:
+            self.vault.update(entry["id"], name=name)
             self.refresh_vault()
+            self.log("账号", "已改名为「%s」" % name)
 
     def edit_note(self):
         entry = self.selected_entry()
@@ -2040,10 +2421,14 @@ class App:
         if entry.get("kind") == "backup":
             messagebox.showinfo(APP_TITLE, "备份条目不能改备注。")
             return
-        note = simpledialog.askstring(APP_TITLE, "备注：", initialvalue=entry.get("note", ""), parent=self.root)
+        note = dialogs.ask_text(
+            self, "编辑备注", hint="给自己看的说明，比如「主号」「给朋友」",
+            initial=entry.get("note", ""), max_len=200, multiline=True,
+            allow_empty=True)
         if note is not None:
             self.vault.update(entry["id"], note=note)
             self.refresh_vault()
+            self.log("账号", "备注已更新")
 
     def copy_key(self):
         entry = self.selected_entry()
