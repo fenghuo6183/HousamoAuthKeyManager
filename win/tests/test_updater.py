@@ -38,6 +38,31 @@ class VersionTest(unittest.TestCase):
     def test_pick_asset_none(self):
         self.assertIsNone(updater.pick_asset({"assets": []}))
 
+    def test_parse_desktop_tag(self):
+        # The desktop line carries a "-win" suffix; 1.1 must still win over it.
+        self.assertEqual(updater.parse_version("v1.0-win"), (1, 0))
+        self.assertTrue(updater.is_newer("v1.1", "1.0-win"))
+        self.assertFalse(updater.is_newer("v1.0-win", "1.0-win"))
+
+    def test_select_release_skips_android_only(self):
+        releases = [
+            {"tag_name": "v1.2", "assets": [{"name": "HousamoAuthKeyManager-1.2.apk"}]},
+            {"tag_name": "v1.0-win", "assets": [{"name": updater.ASSET_NAME}]},
+            {"tag_name": "v0.9-win", "assets": [{"name": updater.ASSET_NAME}]},
+        ]
+        self.assertEqual(updater.select_release(releases)["tag_name"], "v1.0-win")
+
+    def test_select_release_skips_drafts(self):
+        releases = [
+            {"tag_name": "v1.1", "draft": True, "assets": [{"name": updater.ASSET_NAME}]},
+            {"tag_name": "v1.0-win", "assets": [{"name": updater.ASSET_NAME}]},
+        ]
+        self.assertEqual(updater.select_release(releases)["tag_name"], "v1.0-win")
+
+    def test_select_release_empty(self):
+        self.assertEqual(updater.select_release([]), {})
+        self.assertEqual(updater.select_release([{"assets": [{"name": "a.apk"}]}]), {})
+
 
 class ApplyTest(unittest.TestCase):
     def setUp(self):
