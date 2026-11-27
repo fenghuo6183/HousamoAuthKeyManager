@@ -1,4 +1,4 @@
-# 东放 AuthKey 管家 (Housamo AuthKey Manager)
+# <img src="docs/icon.png" width="64" align="top"> 东放 AuthKey 管家 (Housamo AuthKey Manager)
 
 给《东京放课后召唤师》(東京放課後サモナーズ / Housamo, 包名 `jp.co.lifewonders.housamo`) 用的 **一键备份 / 迁移 / 多开** 工具。
 
@@ -36,6 +36,7 @@
 │   ├── AndroidManifest.xml
 │   ├── src/com/housamo/authkey/MainActivity.java
 │   ├── libs/                 Shizuku API（MIT，vendor 进来免 Gradle 依赖）
+│   ├── res/                  启动图标（自适应图标 + 各密度 png，由 tools/gen_icon.py 生成）
 │   └── build_apk.py          aapt2 + javac + d8 + zipalign + apksigner
 └── tools/                    开发期工具（拉取 JDK / SDK / PyInstaller）
 ```
@@ -53,7 +54,7 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.9.apk` 安装（Android 7.0+）。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.10.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
@@ -121,7 +122,7 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.9.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.10.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
@@ -147,6 +148,7 @@ Windows 端用 DPAPI 加密，绑定当前 Windows 账号；Android 端存在应
 
 ## 更新日志
 
+- **v1.0.10** — 全新应用图标：把角色立绘做成自适应图标（Android 8+ 各种圆/方/水滴形状里都能正确裁切，低版本用传统方形图标）；设置页与桌面图标保持一致。
 - **v1.0.9** — 账号页改版：账号与备份分成两个分段、各自独立列表；账号卡片重做（加粗名称 + 指纹/大小/时间 + 存盘路径 + 选中勾选圈），备份卡片标成琥珀色并支持「导入到游戏」一键还原；修掉长按在备份页会复制 key 的行为。
 - **v1.0.8** — 修掉设置页「版本」写死成 1.0.5 的显示错误，现在直接读系统里的真实版本号（如 1.0.8 (9)）；其余与 1.0.7 相同。
 - **v1.0.7** — 支持 App 内直接更新：启动发现新版本就弹窗，点「立即更新」当场下载并覆盖安装（不再跳浏览器）；**备份失败则中止导入**，绝不在没备份的情况下覆盖原 key。
