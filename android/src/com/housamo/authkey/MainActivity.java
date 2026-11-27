@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.19";
+    static final String CURRENT_VER = "1.0.20";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -117,6 +117,9 @@ public class MainActivity extends Activity {
     private static final int REQ_TREE_IMPORT = 0x74;
     private static final int REQ_TREE_ZIP = 0x75;
     private static final int REQ_QR_IMG = 0x76;
+    private static final int REQ_QR_SHOT = 0x77;
+    /** 相机拍照扫二维码时的落盘位置（onActivityResult 里读回来解码）。 */
+    private File pendingShot;
     private final java.util.List<Account> exportEntries = new java.util.ArrayList<Account>();
     private Account copyTarget = null;
     private boolean copyMove = false;
@@ -856,7 +859,11 @@ public class MainActivity extends Activity {
             public void onClick(View v) { importFromClipboard(); }
         }), cardParams(0));
 
-        p.addView(taskCard("从二维码图片导入 key", "别人把 key 做成二维码发给你时，从相册或文件里选那张图，自动解出 key 存进账号库。", new View.OnClickListener() {
+        p.addView(taskCard("扫一扫二维码", "打开相机对准别的屏幕或纸上的二维码，解出 key 存进账号库；相机打不开时会改用相册选图。", new View.OnClickListener() {
+            public void onClick(View v) { pickQrShot(); }
+        }), cardParams(0));
+
+        p.addView(taskCard("从相册选二维码", "二维码是截图或图片时，从相册 / 文件里选那张图识别，不调相机。", new View.OnClickListener() {
             public void onClick(View v) { pickQrImage(); }
         }), cardParams(0));
 
@@ -3349,6 +3356,25 @@ public class MainActivity extends Activity {
 
     // ---------- 二维码 ----------
 
+    /** 扫一扫：直接调系统相机拍照，拍完回来识别二维码。 */
+    private void pickQrShot() {
+        try {
+            File dir = new File(getCacheDir(), "qr");
+            if (!dir.exists()) dir.mkdirs();
+            File f = new File(dir, "shot-" + System.currentTimeMillis() + ".jpg");
+            pendingShot = f;
+            Intent i = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            i.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, ApkProvider.uriForShot(f));
+            i.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(i, REQ_QR_SHOT);
+        } catch (Throwable t) {
+            log("[二维码] 相机打不开：" + t);
+            toast("相机打不开，改成从相册选图");
+            pendingShot = null;
+            pickQrImage();
+        }
+    }
+
     private void pickQrImage() {
         try {
             Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -4091,6 +4117,18 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_QR_SHOT) {
+            File shot = pendingShot;
+            pendingShot = null;
+            if (shot == null) return;
+            if (res == RESULT_OK && shot.length() > 0) {
+                decodeQrUri(android.net.Uri.fromFile(shot));
+            } else {
+                shot.delete();
+                toast("没拍到照片，重试一次或改用相册选图");
+            }
+            return;
+        }
         if (res != RESULT_OK || data == null || data.getData() == null) return;
         android.net.Uri uri = data.getData();
         if (req == REQ_QR_IMG) {
