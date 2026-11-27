@@ -156,11 +156,11 @@ class PillButton(tk.Canvas):
     KINDS = {
         "primary": dict(fill="accent", hover="accent_hover", press="accent_press",
                         text="on_accent", border=None, emph=True),
-        "ghost": dict(fill="card_soft", hover="accent_soft", press="#DCE7FF",
+        "ghost": dict(fill="card_soft", hover="accent_soft", press="btn_hover",
                       text="text", border="border", emph=False),
-        "soft": dict(fill="accent_soft", hover="#D8E4FF", press="#C9D9FF",
+        "soft": dict(fill="accent_soft", hover="soft_hover", press="soft_press",
                      text="accent", border=None, emph=False),
-        "danger": dict(fill="err_soft", hover="#F8DBD8", press="#F1C8C4",
+        "danger": dict(fill="err_soft", hover="danger_hover", press="danger_press",
                        text="err", border=None, emph=False),
     }
 
@@ -214,7 +214,7 @@ class PillButton(tk.Canvas):
     def _palette(self):
         spec = self.KINDS.get(self.kind, self.KINDS["primary"])
         if not self._enabled:
-            return "#E8EDF6", "#ACB7C9", None
+            return self.app.pal["glyph_off"], self.app.pal["glyph_off_line"], None
         key = {"normal": "fill", "hover": "hover", "press": "press"}.get(self._state, "fill")
         fill = self.app.pal[spec[key]]
         fg = self.app.pal[spec["text"]]
