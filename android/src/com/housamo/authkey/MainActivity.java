@@ -14,6 +14,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Environment;
+import android.os.Handler;
 import android.provider.MediaStore;
 import android.provider.Settings;
 import android.text.InputType;
@@ -66,6 +67,7 @@ public class MainActivity extends Activity {
     private TextView rowRootVal, rowGameVal, rowShzkVal, rowPermVal, rowCount, rowSaved, rowSelVal;
     private TextView rowStoreVal, rowResVal, rowOsVal, rowVerVal;
     private TextView rowSvcVal, rowModeVal, rowBatteryVal, rowNotifVal, rowGameVerVal, rowExportVal, rowUpdateVal;
+    private TextView rowBakVal;
     private static final int REQ_TREE = 0x71;
     private TextView tvLog;
     private ScrollView logScroll;
@@ -147,11 +149,13 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         loadVault();
         refreshList();
+        maybeShowDisclaimer();
+        syncFromExportFolderAsync();
+
         int startPage = getPreferences(MODE_PRIVATE).getInt("page", 0);
         if (getIntent() != null && getIntent().hasExtra("page")) {
             startPage = getIntent().getIntExtra("page", startPage);
         }
-        android.util.Log.i("HSK", "startPage=" + startPage + " hasExtra=" + (getIntent() != null && getIntent().hasExtra("page")));
         if (startPage >= 0 && startPage <= 3) showPage(startPage);
         pool.execute(new Runnable() {
             public void run() {
@@ -450,6 +454,28 @@ public class MainActivity extends Activity {
         cur.addView(ch);
         p.addView(cur, cardParams(0));
 
+        LinearLayout bk = card();
+        TextView bkt = new TextView(this);
+        bkt.setText("导入前备份");
+        bkt.setTextSize(14);
+        bkt.setTextColor(Color.parseColor("#1B1F24"));
+        bkt.setPadding(dp(2), dp(13), dp(2), 0);
+        bk.addView(bkt);
+        rowBakVal = value(0, lastBackupPath().replace("导入前备份/", "导入前备份/\n"));
+        rowBakVal.setTextSize(12);
+        rowBakVal.setPadding(dp(2), dp(3), dp(2), dp(13));
+        rowBakVal.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { toast(lastBackupPath()); }
+        });
+        bk.addView(rowBakVal);
+        TextView bh = new TextView(this);
+        bh.setText("每次导入前，都会先把游戏里正在用的 key 存到 Download/东放Key/导入前备份/，再写入你选的 key。原 key 丢了就很难找回。");
+        bh.setTextSize(11);
+        bh.setTextColor(Color.parseColor("#9AA3B0"));
+        bh.setPadding(dp(2), dp(2), 0, dp(4));
+        bk.addView(bh);
+        p.addView(bk, cardParams(0));
+
         p.addView(taskCard("提取当前账号的 key", "把游戏里正在登录的账号 key 抽出来，存进账号库，并自动存一份到上面选的文件夹。", new View.OnClickListener() {
             public void onClick(View v) { doExtract(); }
         }), cardParams(0));
@@ -519,6 +545,16 @@ public class MainActivity extends Activity {
         tvState.setTextColor(Color.parseColor("#8A93A0"));
         tvState.setPadding(dp(2), 0, 0, dp(6));
         p.addView(tvState);
+
+        LinearLayout rf = card();
+        TextView rfVal = value(0, "账号库 + 导出文件夹");
+        rf.addView(rowWith(rfVal, "重新扫描 key", new View.OnClickListener() {
+            public void onClick(View v) {
+                toast("正在扫描导出文件夹…");
+                syncFromExportFolderAsync();
+            }
+        }));
+        p.addView(rf, cardParams(0));
 
         LinearLayout ac = card();
         list = new ListView(this);
@@ -1875,6 +1911,308 @@ public class MainActivity extends Activity {
                 .show();
     }
 
+    // ---------- 导出文件夹同步 ----------
+
+    private File exportRootFileDefault() {
+        return new File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "东放Key");
+    }
+
+    private static String readTextFile(File f) {
+        FileInputStream in = null;
+        try {
+            in = new FileInputStream(f);
+            byte[] b = new byte[(int) Math.min(f.length(), 65536)];
+            int n = in.read(b);
+            if (n <= 0) return null;
+            return new String(b, 0, n, "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    private String readUriText(Uri u) {
+        InputStream in = null;
+        try {
+            in = getContentResolver().openInputStream(u);
+            if (in == null) return null;
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            byte[] buf = new byte[4096];
+            int n;
+            while ((n = in.read(buf)) > 0) bo.write(buf, 0, n);
+            return new String(bo.toByteArray(), "UTF-8");
+        } catch (Throwable t) {
+            return null;
+        } finally {
+            try { if (in != null) in.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    private List<Account> scanExportRoot() {
+        List<Account> out = new ArrayList<Account>();
+        try {
+            File root = exportRootFileDefault();
+            File[] dirs = root.listFiles();
+            if (dirs != null) {
+                for (File d : dirs) {
+                    if (d == null || !d.isDirectory()) continue;
+                    if (d.getName().startsWith("_")) continue;
+                    File f = new File(d, "AuthKey.txt");
+                    if (!f.isFile()) continue;
+                    String k = readTextFile(f);
+                    if (k == null) continue;
+                    k = k.trim();
+                    if (k.length() < 8) continue;
+                    Account a = new Account(safeName(d.getName()), k);
+                    a.note = "来自导出文件夹";
+                    a.folder = f.getAbsolutePath();
+                    out.add(a);
+                }
+            }
+        } catch (Throwable t) {
+            log("[账号] 读默认导出文件夹失败：" + t);
+        }
+        Uri tree = exportRootUri();
+        if (tree != null) {
+            android.database.Cursor c = null;
+            try {
+                String treeId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                c = getContentResolver().query(
+                        android.provider.DocumentsContract.buildChildDocumentsUriUsingTree(tree, treeId),
+                        new String[]{android.provider.DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                                android.provider.DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                                android.provider.DocumentsContract.Document.COLUMN_MIME_TYPE}, null, null, null);
+                while (c != null && c.moveToNext()) {
+                    String mime = c.getString(2);
+                    if (mime == null || mime.indexOf("directory") < 0) continue;
+                    String nm = c.getString(1);
+                    if (nm == null || nm.startsWith("_")) continue;
+                    Uri sub = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, c.getString(0));
+                    Uri f = findChild(sub, "AuthKey.txt");
+                    if (f == null) continue;
+                    String k = readUriText(f);
+                    if (k == null) continue;
+                    k = k.trim();
+                    if (k.length() < 8) continue;
+                    Account a = new Account(safeName(nm), k);
+                    a.note = "来自导出文件夹";
+                    a.folder = exportRootLabel() + "/" + nm + "/AuthKey.txt";
+                    out.add(a);
+                }
+            } catch (Throwable t) {
+                log("[账号] 读自定义导出目录失败：" + t);
+            } finally {
+                try { if (c != null) c.close(); } catch (Throwable ignored) { }
+            }
+        }
+        return out;
+    }
+
+    private int syncFromExportFolder() {
+        List<Account> found = scanExportRoot();
+        int changed = 0;
+        for (Account f : found) {
+            Account hit = null;
+            for (Account a : accounts) {
+                if (a.key != null && a.key.trim().equals(f.key)) { hit = a; break; }
+            }
+            if (hit == null) {
+                accounts.add(f);
+                changed++;
+            } else {
+                if (hit.folder == null || hit.folder.length() == 0) { hit.folder = f.folder; changed++; }
+                if (hit.name == null || hit.name.length() == 0) { hit.name = f.name; changed++; }
+            }
+        }
+        return changed;
+    }
+
+    private void syncFromExportFolderAsync() {
+        pool.execute(new Runnable() {
+            public void run() {
+                final int n = syncFromExportFolder();
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        if (n > 0) {
+                            saveVault();
+                            log("[账号] 从导出文件夹读到 " + n + " 个 key");
+                        }
+                        refreshList();
+                    }
+                });
+            }
+        });
+    }
+
+    // ---------- 导入前备份 ----------
+
+    private String backupRootPath() {
+        return Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS).getAbsolutePath()
+                + "/东放Key/导入前备份";
+    }
+
+    private String lastBackupPath() {
+        String p = getPreferences(MODE_PRIVATE).getString("lastBackup", "");
+        return p.length() == 0 ? "还没有导入过，导入时会自动备份" : p;
+    }
+
+    private String backupCurrentKey(String key, String target) {
+        byte[] data = key.getBytes();
+        String name = "AuthKey-" + new SimpleDateFormat("MMdd-HHmmss", Locale.US).format(new Date())
+                + "-" + hash(key).substring(0, 8) + ".txt";
+        String rel = "Download/东放Key/导入前备份/" + name;
+        String dir = backupRootPath();
+        try {
+            File d = new File(dir);
+            if (d.exists() || d.mkdirs()) {
+                File f = new File(d, name);
+                FileOutputStream fo = new FileOutputStream(f);
+                try {
+                    fo.write(data);
+                    fo.flush();
+                } finally {
+                    fo.close();
+                }
+                if (f.length() == data.length) return rel;
+            }
+        } catch (Throwable t) {
+            log("[备份] 直接写入失败：" + t.getMessage());
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            OutputStream os = null;
+            try {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, "text/plain");
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/东放Key/导入前备份");
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri != null) {
+                    os = getContentResolver().openOutputStream(uri);
+                    if (os != null) {
+                        os.write(data);
+                        os.flush();
+                        return rel;
+                    }
+                }
+            } catch (Throwable t) {
+                log("[备份] MediaStore 写入失败：" + t.getMessage());
+            } finally {
+                try { if (os != null) os.close(); } catch (Throwable ignored) { }
+            }
+        }
+        if (hasShell()) {
+            Res r = shWithInput("mkdir -p '" + dir + "' && cat > '" + dir + "/" + name + "'", data, 20000);
+            if (r.code == 0) return rel;
+        }
+        return null;
+    }
+
+    // ---------- 免责声明 ----------
+
+    private void maybeShowDisclaimer() {
+        if (getPreferences(MODE_PRIVATE).getBoolean("agreed", false)) return;
+        showDisclaimer();
+    }
+
+    private void showDisclaimer() {
+        final LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        final TextView body = new TextView(this);
+        body.setTextSize(12);
+        body.setTextColor(Color.parseColor("#3A4250"));
+        body.setLineSpacing(dp(4), 1f);
+        body.setText("免责声明"
+                + "\n\n1. 本工具只做一件事：把游戏目录里的 AuthKey 文件复制出来备份，需要时再复制回去。不修改游戏数据、不上传任何内容、不联网（只有「检查更新」会访问 GitHub）。"
+                + "\n\n2. AuthKey 等同于账号密码。任何人拿到这个文件，就能直接登录你的账号，而且你无法察觉。请不要把 key 发给别人、发到群里、传到网盘或公开仓库。"
+                + "\n\n3. 导入时本工具会先停掉游戏，把游戏里正在用的 key 备份到 Download/东放Key/导入前备份/，再写入你选择的 key。备份文件请自己保管好；换机、重装、清数据前，建议再手动导出一份。"
+                + "\n\n4. 导入会覆盖游戏当前登录的账号。如果原 key 没有备份又被覆盖，账号可能无法找回，且本工具无法协助恢复。"
+                + "\n\n5. 本工具与 Lifewonders 无任何关系，是非官方第三方工具。使用本工具导致的账号丢失、封禁、数据异常等后果，由使用者自行承担。"
+                + "\n\n6. 请勿将本工具用于盗号、买卖或共享账号等违反游戏条款的行为。"
+                + "\n\n继续使用即表示你已阅读、理解并接受以上全部内容。");
+        final ScrollView sv = new ScrollView(this);
+        sv.addView(body);
+        box.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(300)));
+        final TextView tip = new TextView(this);
+        tip.setTextSize(12);
+        tip.setTextColor(Color.parseColor("#8A93A0"));
+        tip.setPadding(0, dp(10), 0, 0);
+        tip.setText("请阅读到最底部，倒计时结束后才能点「同意」");
+        box.addView(tip);
+
+        final boolean[] bottom = new boolean[]{false};
+        final int[] left = new int[]{10};
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("免责声明 · 请先读完")
+                .setView(box)
+                .setPositiveButton("同意（10）", null)
+                .setNegativeButton("退出", null)
+                .setCancelable(false)
+                .create();
+        dlg.setOnShowListener(new android.content.DialogInterface.OnShowListener() {
+            public void onShow(android.content.DialogInterface d) {
+                final Button ok = dlg.getButton(AlertDialog.BUTTON_POSITIVE);
+                ok.setEnabled(false);
+                ok.setOnClickListener(new View.OnClickListener() {
+                    public void onClick(View v) {
+                        getPreferences(MODE_PRIVATE).edit().putBoolean("agreed", true).apply();
+                        dlg.dismiss();
+                        log("[声明] 已阅读并同意免责声明");
+                    }
+                });
+                dlg.getButton(AlertDialog.BUTTON_NEGATIVE).setOnClickListener(new View.OnClickListener() {
+                    public void onClick(View v) {
+                        finish();
+                    }
+                });
+                final Handler h = new Handler();
+                h.postDelayed(new Runnable() {
+                    public void run() {
+                        left[0]--;
+                        if (left[0] < 0) left[0] = 0;
+                        boolean ready = left[0] <= 0 && bottom[0];
+                        if (left[0] > 0) {
+                            ok.setText("同意（" + left[0] + "）");
+                        } else {
+                            ok.setText(bottom[0] ? "同意" : "请先读到底部");
+                        }
+                        ok.setEnabled(ready);
+                        if (bottom[0] && left[0] <= 0) {
+                            tip.setText("可以点「同意」了");
+                        } else if (left[0] > 0 && bottom[0]) {
+                            tip.setText("还需等待 " + left[0] + " 秒");
+                        } else if (left[0] > 0) {
+                            tip.setText("请阅读到最底部，倒计时结束后才能点「同意」（还剩 " + left[0] + " 秒）");
+                        } else {
+                            tip.setText("请阅读到最底部后才能点「同意」");
+                        }
+                        if (left[0] > 0) h.postDelayed(this, 1000);
+                    }
+                }, 1000);
+                sv.setOnScrollChangeListener(new View.OnScrollChangeListener() {
+                    public void onScrollChange(View v, int sx, int sy, int osx, int osy) {
+                        View child = sv.getChildAt(0);
+                        if (child == null) return;
+                        if (sy + sv.getHeight() >= child.getBottom() - dp(8)) {
+                            bottom[0] = true;
+                            if (left[0] <= 0) {
+                                ok.setEnabled(true);
+                                ok.setText("同意");
+                                tip.setText("可以点「同意」了");
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        dlg.show();
+        sv.post(new Runnable() {
+            public void run() {
+                sv.scrollTo(0, 0);
+            }
+        });
+    }
+
     private void doImport() {
         final Account a = selected();
         if (a == null) {
@@ -1891,25 +2229,42 @@ public class MainActivity extends Activity {
                 if (cur != null) {
                     old = new String(cur).trim();
                     if (old.length() >= 8) {
-                        final Account bak = new Account("自动备份 " + stamp(), old);
-                        bak.note = "导入「" + a.name + "」前自动备份";
+                        final String saved = backupCurrentKey(old, a.name);
+                        final Account bak = new Account("导入前备份 " + stamp(), old);
+                        bak.note = saved == null
+                                ? ("导入「" + a.name + "」前自动备份（文件写入失败，只存在账号库）")
+                                : ("导入「" + a.name + "」前自动备份 → " + saved);
+                        bak.folder = saved == null ? "" : saved;
                         runOnUiThread(new Runnable() {
                             public void run() {
                                 accounts.add(bak);
                                 saveVault();
                                 refreshList();
+                                if (rowBakVal != null) rowBakVal.setText(saved == null ? ("导入前备份 " + bak.created) : saved.replace("导入前备份/", "导入前备份/\n"));
+                                if (saved != null) {
+                                    getPreferences(MODE_PRIVATE).edit().putString("lastBackup", saved).apply();
+                                }
                             }
                         });
-                        log("[备份] 已备份当前 Key → " + bak.name);
+                        log(saved == null
+                                ? "[备份] 当前 key 已存进账号库（文件写入失败，请手动导出一次）"
+                                : ("[备份] 当前 key 已存到 " + saved));
                     }
                 }
+                final String prevKey = old;
                 // 2. 停止游戏
                 shell("am force-stop " + PKG, 15000);
                 log("[停止] 已尝试停止游戏进程");
                 // 3. 写入
                 boolean ok = writeKey(a.key.getBytes());
                 if (!ok) {
-                    log("[失败] 写入 AuthKey 失败。Android 11+ 需要 root；也可改用 Windows 版。");
+                    log("[失败] 写入 AuthKey 失败，正在把原来的 key 写回去…");
+                    if (prevKey != null) {
+                        boolean restored = writeKey(prevKey.getBytes());
+                        log(restored
+                                ? "[恢复] 已把原 key 写回，游戏登录状态不变。"
+                                : "[恢复] 原 key 写回也失败了，请用「导入前备份」里的文件手动恢复。");
+                    }
                     toast("导入失败");
                     return;
                 }
