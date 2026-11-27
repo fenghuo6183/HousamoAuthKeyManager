@@ -13,6 +13,8 @@
 - **一键提取**：连上手机 / 模拟器，点一下就把当前账号的 AuthKey 抓进账号库，自动带设备名和时间。
 - **一键导入**：选中账号 → 自动停游戏 → 自动备份原有 key → 写入 → 回读校验，启动游戏即登录。
 - **多账号管理**：重命名、指纹校验、删除、明文 `.hak` 导入导出（换电脑 / 备份用）。
+- **提取即命名**：抓到 key 后弹框让你起名，同时保存一份到 `Download/东放Key/<名字>/AuthKey.txt`，文件管理器里直接能看到、能发给别人。
+- **保存文件夹（Windows）**：选一个文件夹，之后每次提取都自动按账号名建子文件夹写 `AuthKey.txt`。
 - **模拟器多开**：自动扫描 MuMu / 雷电 / 夜神 / 逍遥 / BlueStacks / 通用 5555 等端口，一台机器多开几个模拟器也能分别提取与导入。
 - **免 root 优先**：Android 10 及以下游戏把 AuthKey 放在**外部存储**（`/sdcard/Android/data/...`），无需 root；Android 11+ 系统封了该目录，工具支持 **Shizuku**（把 adb shell 权限借给普通 App，不需要 root）与 **root** 两条通道。
 
@@ -43,20 +45,26 @@
 1. 到 [Releases](../../releases) 下载 `AuthKeyManager-win64.zip`，解压后双击 `AuthKeyManager.exe`（已内置 adb，无需安装 Android SDK）。
 2. 手机：设置 → 关于手机 → 连点「版本号」7 次开启开发者选项 → 打开 **USB 调试** → 数据线连电脑 → 手机上点「允许调试」。
    模拟器：直接点界面上的 **扫描模拟器**。
-3. 顶部下拉框选中设备 → **提取 AuthKey 到账号库**。
-4. 换号：列表里选中目标账号 → **把选中账号导入设备** → 处理完点 **打开游戏**。
+3. 第一次用先在「保存文件夹」那一行点 **选择文件夹**（选好后每次提取都会自动导出到这个文件夹）。
+4. 顶部下拉框选中设备 → **提取 AuthKey 到账号库** → 弹框里给它起个名字。
+5. 换号：列表里选中目标账号 → **把选中账号导入设备** → 处理完点 **打开游戏**。
 
 > 账号库默认加密保存在 `%APPDATA%\HousamoAuthKey\vault.dat`（Windows DPAPI，只有当前 Windows 用户能解开）。要换机器 / 备份就用「导出 .hak」，那是明文，**别随便发给别人**。
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.2.apk` 安装（Android 7.0+）。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.3.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
   1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)。首次需要通过「开发者选项 → 无线调试」配对启动（Shizuku 自己是靠 adb 权限起的，**不需要 root**；网上有大量图文教程）。
   2. 打开本 App，点顶部 **Shizuku** 按钮 → 在 Shizuku 弹窗里点「允许」。
   3. 状态栏变成「Shizuku：已授权」后，提取 / 导入即可正常工作（走 shell 通道，等同 `adb pull`）。
+  4. 没装 Shizuku 时点「Shizuku」会直接问你要不要跳转下载；装了但服务没起，会帮你把 Shizuku 打开。
+
+界面分三个页签：**任务**（状态 / 提取 / 导入 / 导出 / 日志）、**账号**（key 列表，复制、重命名、删除）、**设置**（权限、关于、清空账号库）。
+
+提取完会让你给账号起个名字，key 会同时进账号库，并写出 `Download/东放Key/<你起的名字>/AuthKey.txt`。
 - **无 root 且没有 Shizuku**：只有 Android 10 及以下能直接读写外部 AuthKey；**Android 11 及以上系统不允许任何 App 访问 `Android/data/<其它包名>`**，请改用 Windows 版（adb 免 root）。
 
 ## AuthKey 到底在哪
@@ -98,7 +106,7 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.2.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.3.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
@@ -124,6 +132,7 @@ Windows 端用 DPAPI 加密，绑定当前 Windows 账号；Android 端存在应
 
 ## 更新日志
 
+- **v1.0.3** — 界面重做成白卡三页签（任务 / 账号 / 设置）；提取后可自己命名，并导出到 `Download/东放Key/<名字>/AuthKey.txt`；Windows 端可选择保存文件夹，提取后自动按名字分文件夹保存；写 AuthKey 改为原地覆盖（`cat >`），保留原属主与权限，避免 `cp` 后文件变成 shell 所有导致游戏读不到。
 - **v1.0.2** — Android 端接入 Shizuku，无 root 也能在手机上提取 / 导入；最低系统要求升到 Android 7.0。
 - **v1.0.1** — 修复 Android 11+ 包可见性导致「游戏：未检测到」。
 - **v1.0.0** — 首发：Windows 桌面端 + Android 端。
