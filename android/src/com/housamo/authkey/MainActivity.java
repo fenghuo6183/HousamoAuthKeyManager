@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
     static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.10";
+    static final String CURRENT_VER = "1.0.11";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -80,8 +80,14 @@ public class MainActivity extends Activity {
     private final List<Account> accounts = new ArrayList<Account>();
     private final List<Account> accView = new ArrayList<Account>();
     private int accTab = 0;
-    private Button segA, segB, bMain, bRename;
+    private Button segA, segB, bMain, bRename, bCopy, bDel;
     private TextView emptyHint, tvAccHint;
+    /** 游戏里当前正在用的 key 指纹（后台读，用来在卡片上标「游戏在用」）。 */
+    private String curFp = null;
+    private Account pendingImport = null;
+    private boolean curFpBusy = false;
+    private boolean curFpLoaded = false;
+    private int curPage = 0;
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean rootChecked = false;
     private boolean hasRoot = false;
@@ -340,6 +346,7 @@ public class MainActivity extends Activity {
     private void showPage(int idx) {
         if (pageHome == null) return;
         if (idx < 0 || idx > 3) idx = 0;
+        curPage = idx;
         getPreferences(MODE_PRIVATE).edit().putInt("page", idx).apply();
         pageHome.setVisibility(idx == 0 ? View.VISIBLE : View.GONE);
         pageTask.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
@@ -352,6 +359,10 @@ public class MainActivity extends Activity {
             if (tabs[i] == null) continue;
             tabs[i].setTextColor(idx == i ? on : off);
             tabs[i].setTypeface(null, idx == i ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+        }
+        if (idx == 2) {
+            curFpLoaded = false;
+            refreshCurrentFp();
         }
     }
 
@@ -621,7 +632,7 @@ public class MainActivity extends Activity {
             public boolean onItemLongClick(AdapterView<?> parent, View v, int pos, long id) {
                 list.setItemChecked(pos, true);
                 updateState();
-                if (accTab == 1) doImport(); else doCopy();
+                showAccMenu();
                 return true;
             }
         });
@@ -643,23 +654,28 @@ public class MainActivity extends Activity {
         tvAccHint.setTextColor(Color.parseColor("#9AA3B0"));
         tvAccHint.setPadding(dp(2), dp(8), dp(2), dp(6));
         op.addView(tvAccHint);
+        bMain = mkBtn("导入到游戏", true);
+        bMain.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { doImport(); }
+        });
+        op.addView(bMain, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
-        bMain = mkBtn("复制", false);
-        bMain.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) {
-                if (accTab == 1) doImport(); else doCopy();
-            }
+        bCopy = mkBtn("复制 key", false);
+        bCopy.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { doCopy(); }
         });
         bRename = mkBtn("重命名", false);
         bRename.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doRename(); }
         });
-        Button bDel = mkBtn("删除", false);
+        bDel = mkBtn("删除", false);
         bDel.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doDelete(); }
         });
-        row1.addView(bMain, weight());
+        row1.addView(bCopy, weight());
         row1.addView(bRename, weight());
         row1.addView(bDel, weight());
         op.addView(row1);
@@ -822,6 +838,23 @@ public class MainActivity extends Activity {
             col.addView(name);
             col.addView(meta);
             col.addView(path);
+
+            boolean inUse = curFp != null && curFp.equals(a.fpShort());
+            boolean dup = isDup(a);
+            if (inUse || dup) {
+                LinearLayout chips = new LinearLayout(MainActivity.this);
+                chips.setOrientation(LinearLayout.HORIZONTAL);
+                chips.setPadding(0, dp(5), 0, 0);
+                if (inUse) chips.addView(chip("游戏在用", "#19A974", "#E8F7EF"));
+                if (dup) {
+                    TextView c = chip("重复", "#8A6D1F", "#FBF3DA");
+                    LinearLayout.LayoutParams cl = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    cl.setMargins(dp(6), 0, 0, 0);
+                    chips.addView(c, cl);
+                }
+                col.addView(chips);
+            }
 
             TextView dot = new TextView(MainActivity.this);
             dot.setText(on ? "✓" : "");
@@ -1537,7 +1570,9 @@ public class MainActivity extends Activity {
     private void refreshAccountsView() {
         if (accView == null) return;
         accView.clear();
-        for (Account a : accounts) {
+        // 新的排前面：账号库是按时间追加的，倒序显示更符合直觉
+        for (int i = accounts.size() - 1; i >= 0; i--) {
+            Account a = accounts.get(i);
             if (a.isBackup() == (accTab == 1)) accView.add(a);
         }
         int na = countAccounts(), nb = countBackups();
@@ -1545,12 +1580,16 @@ public class MainActivity extends Activity {
         if (segB != null) segB.setText("备份 " + nb);
         styleSeg(segA, accTab == 0);
         styleSeg(segB, accTab == 1);
-        if (bMain != null) bMain.setText(accTab == 0 ? "复制" : "导入到游戏");
+        if (bMain != null) bMain.setText("导入到游戏");
         if (bRename != null) bRename.setVisibility(accTab == 0 ? View.VISIBLE : View.GONE);
         if (tvAccHint != null) {
-            tvAccHint.setText(accTab == 0
-                    ? "选中一个账号：复制它的 key、改名，或去「任务」页导入到游戏。"
-                    : "备份是每次导入前自动存下的原 key。选中一条点「导入到游戏」就能还原回去。");
+            String cur = curFp == null
+                    ? (curFpLoaded ? "读不到（需要 Shizuku 或 Root 权限）" : "读取中…")
+                    : curFp;
+            tvAccHint.setText("游戏里现在用的：指纹 " + cur + "\n"
+                    + (accTab == 0
+                    ? "选一个账号 →「导入到游戏」覆盖当前登录（导入前自动备份现在的 key）。复制 / 改名 / 删除在第二排。"
+                    : "备份是每次导入前自动存下的原 key。选中一条点「导入到游戏」就能还原回去。"));
         }
         if (emptyHint != null) {
             if (accView.isEmpty()) {
@@ -2144,6 +2183,97 @@ public class MainActivity extends Activity {
         });
     }
 
+    private TextView chip(String text, String fg, String bg) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(10);
+        t.setTextColor(Color.parseColor(fg));
+        t.setBackground(roundRect(Color.parseColor(bg), 20, 0, 0));
+        t.setPadding(dp(7), dp(2), dp(7), dp(2));
+        return t;
+    }
+
+    /** 账号库里有没有别的条目和它 key 一样（重复导入、多个备份都会命中）。 */
+    private boolean isDup(Account a) {
+        if (a.key == null || a.key.length() <= 20) return false;
+        for (Account b : accounts) {
+            if (b != a && a.key.equals(b.key)) return true;
+        }
+        return false;
+    }
+
+    /** 长按账号卡片弹出的操作菜单。 */
+    private void showAccMenu() {
+        final Account a = selected();
+        if (a == null) return;
+        final java.util.ArrayList<String> items = new java.util.ArrayList<String>();
+        items.add("导入到游戏");
+        items.add("复制 key 到剪贴板");
+        if (!a.isBackup()) items.add("重命名");
+        items.add("删除");
+        new AlertDialog.Builder(this)
+                .setTitle(a.isBackup() ? a.name.replace("导入前备份", "备份") : a.name)
+                .setItems(items.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        String s = items.get(w);
+                        if (s.startsWith("导入")) doImport();
+                        else if (s.startsWith("复制")) doCopy();
+                        else if (s.startsWith("重命名")) doRename();
+                        else doDelete();
+                    }
+                })
+                .show();
+    }
+
+    /** 后台读一次游戏里正在用的 key，算出指纹，用来标记「游戏在用」。 */
+    private void refreshCurrentFp() {
+        if (curFpBusy) return;
+        curFpBusy = true;
+        pool.execute(new Runnable() {
+            public void run() {
+                String fp = null;
+                try {
+                    String k = null;
+                    byte[] d = readKeyAt(EXT_KEY);
+                    if (d != null) k = new String(d).trim();
+                    if (k == null || k.length() < 8) {
+                        byte[] x = readKeyAt(PREFS1);
+                        if (x != null) k = extractFromPrefs(new String(x));
+                    }
+                    if (k != null && k.trim().length() > 20) fp = hash(k.trim()).substring(0, 16);
+                } catch (Throwable ignored) {
+                }
+                final String f = fp;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        curFpBusy = false;
+                        curFpLoaded = true;
+                        curFp = f;
+                        refreshAccountsView();
+                        if (pendingImport != null && selected() == pendingImport) {
+                            pendingImport = null;
+                            doImport();
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    private void launchGame() {
+        try {
+            Intent i = getPackageManager().getLaunchIntentForPackage(PKG);
+            if (i == null) {
+                toast("没找到游戏，请确认已安装");
+                return;
+            }
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+        } catch (Throwable e) {
+            toast("打开游戏失败：" + e);
+        }
+    }
+
     private void doCopy() {
         Account a = selected();
         if (a == null) {
@@ -2516,6 +2646,33 @@ public class MainActivity extends Activity {
             toast("请先选中一个账号");
             return;
         }
+        if (!curFpLoaded) {
+            pendingImport = a;
+            refreshCurrentFp();
+            toast("正在读取游戏里正在用的 key…");
+            return;
+        }
+        String now = curFp == null
+                ? (curFpLoaded ? "读不到（需要 Shizuku 或 Root 权限）" : "读取中…")
+                : curFp;
+        boolean same = curFp != null && curFp.equals(a.fpShort());
+        String msg = "即将把「" + a.name + "」（指纹 " + a.fpShort() + "）写进游戏，会先强制停止游戏。\n\n"
+                + "游戏里现在用的：指纹 " + now + "\n\n"
+                + "导入前会自动把现在的 key 备份到「备份」分段；万一写入失败，会尝试把原 key 写回去。"
+                + (same ? "\n\n注意：这就是游戏里正在用的账号，导入后不会有任何变化。" : "");
+        new AlertDialog.Builder(this)
+                .setTitle("导入到游戏？")
+                .setMessage(msg)
+                .setPositiveButton("导入", new android.content.DialogInterface.OnClickListener() {
+                    public void onClick(android.content.DialogInterface d, int w) {
+                        doImportNow(a);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void doImportNow(final Account a) {
         log("--- 开始导入：" + a.name + " ---");
         pool.execute(new Runnable() {
             public void run() {
@@ -2581,7 +2738,22 @@ public class MainActivity extends Activity {
                 } else {
                     log("[成功] 已导入并校验通过。启动游戏即可登录该账号。");
                 }
-                toast("导入完成");
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        curFpLoaded = false;
+                        refreshCurrentFp();
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("导入完成")
+                                .setMessage("已写入并校验通过。现在打开游戏就会用「" + a.name + "」登录。")
+                                .setPositiveButton("打开游戏", new android.content.DialogInterface.OnClickListener() {
+                                    public void onClick(android.content.DialogInterface d, int w) {
+                                        launchGame();
+                                    }
+                                })
+                                .setNegativeButton("稍后", null)
+                                .show();
+                    }
+                });
             }
         });
     }
