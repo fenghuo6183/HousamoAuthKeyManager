@@ -10,10 +10,10 @@
 
 ## 功能
 
-- **一键提取**：连上手机 / 模拟器，点一下就把当前账号的 AuthKey 抓进账号库，自动带设备名和时间。
+- **一键提取**：连上手机 / 模拟器，点一下就把当前账号的 AuthKey 抓进账号库（自动带设备名和时间），并立刻导出成文件。
 - **一键导入**：选中账号 → 自动停游戏 → 自动备份原有 key → 写入 → 回读校验，启动游戏即登录。
 - **多账号管理**：重命名、指纹校验、删除、明文 `.hak` 导入导出（换电脑 / 备份用）。
-- **提取即命名**：抓到 key 后弹框让你起名，同时保存一份到 `Download/东放Key/<名字>/AuthKey.txt`，文件管理器里直接能看到、能发给别人。
+- **提取即命名**：抓到 key 后弹框让你起名，同时保存一份到 `Download/东放Key/<名字>/AuthKey.txt`（Android 端可在设置里改导出位置），文件管理器里直接能看到、能发给别人。
 - **保存文件夹（Windows）**：选一个文件夹，之后每次提取都自动按账号名建子文件夹写 `AuthKey.txt`。
 - **模拟器多开**：自动扫描 MuMu / 雷电 / 夜神 / 逍遥 / BlueStacks / 通用 5555 等端口，一台机器多开几个模拟器也能分别提取与导入。
 - **免 root 优先**：Android 10 及以下游戏把 AuthKey 放在**外部存储**（`/sdcard/Android/data/...`），无需 root；Android 11+ 系统封了该目录，工具支持 **Shizuku**（把 adb shell 权限借给普通 App，不需要 root）与 **root** 两条通道。
@@ -53,18 +53,27 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.3.apk` 安装（Android 7.0+）。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.5.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
   1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)。首次需要通过「开发者选项 → 无线调试」配对启动（Shizuku 自己是靠 adb 权限起的，**不需要 root**；网上有大量图文教程）。
-  2. 打开本 App，点顶部 **Shizuku** 按钮 → 在 Shizuku 弹窗里点「允许」。
-  3. 状态栏变成「Shizuku：已授权」后，提取 / 导入即可正常工作（走 shell 通道，等同 `adb pull`）。
-  4. 没装 Shizuku 时点「Shizuku」会直接问你要不要跳转下载；装了但服务没起，会帮你把 Shizuku 打开。
+  2. 打开本 App，在「首页 → 权限管理」里点 **Shizuku 权限** → 在 Shizuku 弹窗里点「允许」。
+  3. 状态变成「Shizuku 已授权」后，提取 / 导入即可正常工作（走 shell 通道，等同 `adb pull`）。
+  4. 没装 Shizuku 时点这一行会直接问你要不要跳转下载；装了但服务没起，会帮你把 Shizuku 打开。
 
-界面分三个页签：**任务**（状态 / 提取 / 导入 / 导出 / 日志）、**账号**（key 列表，复制、重命名、删除）、**设置**（权限、关于、清空账号库）。
+界面分四个页签：
 
-提取完会让你给账号起个名字，key 会同时进账号库，并写出 `Download/东放Key/<你起的名字>/AuthKey.txt`。
+- **首页**（照 MAA 的排版做的）：屏幕分辨率 / 游戏版本 / App 版本 / 服务状态，运行模式，以及权限管理（Shizuku、Root、外部存储、电池优化白名单、通知）。权限那几行点一下就能去授权，返回后自动刷新。
+- **任务**：三个按钮——「提取当前账号的 key」「将当前选择的 key 导入到游戏」「把选中的 key 再存一份到文件夹」；最上面那张卡就是存到哪个文件夹，点一下就能换。下面是运行日志，每一步都有记录，出问题先看这里。
+- **账号**：key 列表，每行显示名字、指纹、大小、导入时间，以及这个 key 导出到了哪个路径；选中后可复制 / 重命名 / 删除。
+- **设置**：权限、导出位置、检查更新、项目主页（点一下跳 GitHub）、版本、清空账号库。
+
+**自动检查更新**：每次打开 App 会自动去 GitHub 查最新 Release，有新版就在「设置 → 检查更新」显示「发现 x.y.z，点此下载」，点一下直接跳下载页。
+
+**导出位置可自选**：设置 → 导出位置 → 选一个文件夹（默认 `Download/东放Key/`），之后每个账号都会在下面建一个以账号名命名的子文件夹，里面放 `AuthKey.txt`。
+
+提取完会让你给账号起个名字，key 会同时进账号库，并写出 `<导出位置>/<你起的名字>/AuthKey.txt`。
 - **无 root 且没有 Shizuku**：只有 Android 10 及以下能直接读写外部 AuthKey；**Android 11 及以上系统不允许任何 App 访问 `Android/data/<其它包名>`**，请改用 Windows 版（adb 免 root）。
 
 ## AuthKey 到底在哪
@@ -106,7 +115,7 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.3.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.5.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
