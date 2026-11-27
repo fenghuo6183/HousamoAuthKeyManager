@@ -134,7 +134,10 @@ def _write_external(adb, serial, key, log):
     log("已把 key 上传到设备临时目录")
     try:
         adb.shell(serial, 'mkdir -p "%s"' % EXT_DIR)
-        adb.shell(serial, 'cp "%s" "%s"' % (remote_tmp, target), timeout=25)
+        # 原地覆盖：文件已存在时 cat > 保留原属主/权限；cp 会把文件变成 shell 所有，游戏可能读不到
+        stdin_cmd = ('if [ -f "%s" ]; then cat > "%s"; else cat > "%s" && chmod 660 "%s"; fi'
+                     % (target, target, target, target))
+        adb.shell_stdin(serial, stdin_cmd, key, timeout=30)
         if adb.shell_bytes(serial, 'cat "%s"' % target) == key:
             adb.shell(serial, 'chmod 644 "%s"' % target)
             log("已写入外部存储 AuthKey")
