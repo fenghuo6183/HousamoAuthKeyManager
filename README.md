@@ -14,7 +14,7 @@
 - **一键导入**：选中账号 → 自动停游戏 → 自动备份原有 key → 写入 → 回读校验，启动游戏即登录。
 - **多账号管理**：重命名、指纹校验、删除、明文 `.hak` 导入导出（换电脑 / 备份用）。
 - **模拟器多开**：自动扫描 MuMu / 雷电 / 夜神 / 逍遥 / BlueStacks / 通用 5555 等端口，一台机器多开几个模拟器也能分别提取与导入。
-- **免 root 优先**：Android 10 及以下，游戏把 AuthKey 放在**外部存储**（`/sdcard/Android/data/...`），无需 root；Android 11+ 系统封了该目录，工具会自动尝试 root 通道并明确提示。
+- **免 root 优先**：Android 10 及以下游戏把 AuthKey 放在**外部存储**（`/sdcard/Android/data/...`），无需 root；Android 11+ 系统封了该目录，工具支持 **Shizuku**（把 adb shell 权限借给普通 App，不需要 root）与 **root** 两条通道。
 
 ## 仓库结构
 
@@ -33,6 +33,7 @@
 ├── android/                  Android 端（Java，无 Gradle 手工构建）
 │   ├── AndroidManifest.xml
 │   ├── src/com/housamo/authkey/MainActivity.java
+│   ├── libs/                 Shizuku API（MIT，vendor 进来免 Gradle 依赖）
 │   └── build_apk.py          aapt2 + javac + d8 + zipalign + apksigner
 └── tools/                    开发期工具（拉取 JDK / SDK / PyInstaller）
 ```
@@ -49,10 +50,14 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.0.apk` 安装。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.2.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
-- **无 root**：Android 10 及以下可读写外部 AuthKey；**Android 11 及以上系统不允许任何 App 访问 `Android/data/<其它包名>`**，请改用 Windows 版（adb 免 root）。
+- **无 root + Shizuku（推荐给只在手机上操作的）**：
+  1. 安装并启动 [Shizuku](https://shizuku.rikka.app/)。首次需要通过「开发者选项 → 无线调试」配对启动（Shizuku 自己是靠 adb 权限起的，**不需要 root**；网上有大量图文教程）。
+  2. 打开本 App，点顶部 **Shizuku** 按钮 → 在 Shizuku 弹窗里点「允许」。
+  3. 状态栏变成「Shizuku：已授权」后，提取 / 导入即可正常工作（走 shell 通道，等同 `adb pull`）。
+- **无 root 且没有 Shizuku**：只有 Android 10 及以下能直接读写外部 AuthKey；**Android 11 及以上系统不允许任何 App 访问 `Android/data/<其它包名>`**，请改用 Windows 版（adb 免 root）。
 
 ## AuthKey 到底在哪
 
@@ -93,13 +98,16 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.0.apk
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.2.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
 
 **提取不到 key？**
-先用游戏正常登录一次（key 才会生成）；确认设备已授权调试；Android 11+ 且没有 root 时请用 Windows 版走 adb。
+先用游戏正常登录一次（key 才会生成）；确认设备已授权调试；Android 11+ 且没有 root 时，用 Windows 版走 adb，或者在手机上装 Shizuku 并点 App 里的「Shizuku」按钮授权。
+
+**Shizuku 一直显示「未连接」？**
+Shizuku 服务没起来（重启手机后要重新用无线调试启动一次），先打开 Shizuku App 确认它是运行状态，再回到本 App 点「刷新状态」。
 
 **导入后游戏还是新号？**
 导入前必须让游戏进程完全退出（工具会 `am force-stop`），否则游戏退出时会用内存里的状态覆盖文件。导入完再启动游戏。
@@ -113,6 +121,17 @@ Windows 端用 DPAPI 加密，绑定当前 Windows 账号；Android 端存在应
 ## 免责声明
 
 本项目仅供**账号备份、迁移与多开**用途，与 LifeWonder 无关，非官方工具。请勿用于买卖账号、代练、外挂等违反游戏用户协议的行为。使用本工具造成的账号异常、数据丢失等后果由使用者自行承担。若官方提出异议，将立即停止维护。
+
+## 更新日志
+
+- **v1.0.2** — Android 端接入 Shizuku，无 root 也能在手机上提取 / 导入；最低系统要求升到 Android 7.0。
+- **v1.0.1** — 修复 Android 11+ 包可见性导致「游戏：未检测到」。
+- **v1.0.0** — 首发：Windows 桌面端 + Android 端。
+
+## 致谢
+
+- [Shizuku](https://github.com/RikkaApps/Shizuku-API)（MIT）—— 免 root 的 shell 通道。
+- 社区里关于 AuthKey 路径的各种总结。
 
 ## License
 
