@@ -14,6 +14,7 @@ import webbrowser
 from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 from . import adb as adb_mod
+from . import applock
 from . import bgfx
 from . import bulk
 from . import config
@@ -45,6 +46,14 @@ class App:
         self.root = root
         self.settings = config.Settings()
         self.pal = theme.palette(self.settings.get("theme"))
+        # The vault holds plaintext keys, so ask for the PIN before anything
+        # is drawn. A failed unlock leaves the window empty and the caller
+        # closes it.
+        self.locked_out = False
+        if applock.is_enabled(self.settings):
+            if not applock.prompt_unlock(self.root, self.settings, self.pal):
+                self.locked_out = True
+                return
         self.active_game = game.game_by_id(self.settings.get("active_game") or "housamo")
         self.backdrop = bgfx.Backdrop(self.pal)
         self.backdrop.configure(path=self.settings.get("bg_image"),
@@ -647,6 +656,16 @@ class App:
             value = label(line, self, "-", size=9, color="text")
             value.pack(side="left", padx=(theme.px(6), theme.px(0)))
             self.data_rows[key] = value
+        lock_line = tk.Frame(db, bg=pal["card"])
+        lock_line.pack(fill="x", pady=(theme.px(7), theme.px(0)))
+        label(lock_line, self, "应用锁", size=9, color="text_muted", width=10,
+              anchor="w").pack(side="left")
+        self.lock_value = label(lock_line, self, "未开启", size=9, color="text")
+        self.lock_value.pack(side="left", padx=(theme.px(6), theme.px(0)))
+        self.btn_lock = PillButton(self, lock_line, "开启", command=self.toggle_app_lock,
+                                   kind="ghost", width=76, height=26)
+        self.btn_lock.pack(side="right")
+
         data_actions = tk.Frame(db, bg=pal["card"])
         data_actions.pack(fill="x", pady=(theme.px(10), theme.px(0)))
         PillButton(self, data_actions, "打开数据目录", command=self.open_data_dir, kind="ghost",
@@ -1219,6 +1238,48 @@ class App:
             text=os.path.join(self.save_dir, g.label) if self.save_dir else "未选择")
         rows["adb"].configure(text="就绪" if self.adb else "不可用（缺少 platform-tools）",
                               fg=self.pal["ok"] if self.adb else self.pal["err"])
+        self._refresh_lock_row()
+
+    def _refresh_lock_row(self):
+        if not getattr(self, "lock_value", None):
+            return
+        on = applock.is_enabled(self.settings)
+        self.lock_value.configure(text="已开启 · 启动时要输 4-6 位数字" if on else "未开启",
+                                  fg=self.pal["text"] if on else self.pal["text_muted"])
+        self.btn_lock.set_text("关闭" if on else "开启")
+
+    def toggle_app_lock(self):
+        if applock.is_enabled(self.settings):
+            pin = simpledialog.askstring(
+                "关闭应用锁", "先输入当前密码：", show="*", parent=self.root)
+            if pin is None:
+                return
+            if not applock.check_pin(self.settings, pin):
+                messagebox.showerror("关闭应用锁", "密码不对，应用锁没有变动。", parent=self.root)
+                return
+            applock.clear_pin(self.settings)
+            self.log("设置", "应用锁已关闭")
+            self._refresh_lock_row()
+            return
+        pin = simpledialog.askstring(
+            "开启应用锁", "设一个 4-6 位数字密码：\n下次打开程序要先输入它。",
+            show="*", parent=self.root)
+        if pin is None:
+            return
+        again = simpledialog.askstring(
+            "开启应用锁", "再输一次确认：", show="*", parent=self.root)
+        if again is None:
+            return
+        if pin != again:
+            messagebox.showwarning("开启应用锁", "两次输入不一样，请重新设置。", parent=self.root)
+            return
+        try:
+            applock.set_pin(self.settings, pin)
+        except ValueError as exc:
+            messagebox.showwarning("开启应用锁", str(exc), parent=self.root)
+            return
+        self.log("设置", "应用锁已开启（4-6 位数字，启动时校验）")
+        self._refresh_lock_row()
 
     def open_data_dir(self):
         try:
