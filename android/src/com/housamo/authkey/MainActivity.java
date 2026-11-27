@@ -60,6 +60,10 @@ public class MainActivity extends Activity {
     static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
+    static final String CURRENT_VER = "1.0.7";
+    static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
+    private static File pendingApk = null;
+    private String promptedUpdate = "";
 
     private TextView tvState;
     private LinearLayout host, pageHome, pageTask, pageAcc, pageSet;
@@ -1586,6 +1590,7 @@ public class MainActivity extends Activity {
             public void run() {
                 String tag = null;
                 String url = null;
+                String apk = null;
                 try {
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
                             "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest").openConnection();
@@ -1604,6 +1609,8 @@ public class MainActivity extends Activity {
                     if (m1.find()) tag = m1.group(1);
                     java.util.regex.Matcher m2 = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(body);
                     if (m2.find()) url = m2.group(1);
+                    java.util.regex.Matcher m3 = java.util.regex.Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.apk)\"").matcher(body);
+                    if (m3.find()) apk = m3.group(1);
                 } catch (Throwable t) {
                     if (manual) {
                         runOnUiThread(new Runnable() {
@@ -1616,20 +1623,29 @@ public class MainActivity extends Activity {
                     return;
                 }
                 final String ver = tag == null ? "" : tag.replace("v", "");
+                final String apkUrl = apk;
                 final String rel = url == null ? "https://github.com/fenghuo6183/HousamoAuthKeyManager/releases" : url;
-                final int cmp = ver.length() == 0 ? 0 : compareVer(ver, "1.0.5");
+                final int cmp = ver.length() == 0 ? 0 : compareVer(ver, CURRENT_VER);
                 runOnUiThread(new Runnable() {
                     public void run() {
                         if (rowUpdateVal != null) {
-                            rowUpdateVal.setText(cmp > 0 ? "发现 " + ver + "，点此下载" : "已是最新版 1.0.5");
+                            rowUpdateVal.setText(cmp > 0 ? "发现 " + ver + "，点此更新" : "已是最新版 " + CURRENT_VER);
                             rowUpdateVal.setTextColor(cmp > 0 ? Color.parseColor("#2F6BFF") : Color.parseColor("#9AA3B0"));
                         }
                         if (cmp > 0) {
-                            log("[更新] 发现新版本 " + ver + "，点「检查更新」下载");
-                            toast("发现新版本 " + ver);
+                            log("[更新] 发现新版本 " + ver + (apkUrl == null ? "（该版本没有 APK 资产，将跳网页）" : ""));
+                            if (apkUrl != null) {
+                                if (manual) promptedUpdate = "";
+                                if (!promptedUpdate.equals(ver)) showUpdatePrompt(ver, apkUrl);
+                            } else {
+                                toast("发现新版本 " + ver);
+                            }
                             if (rowUpdateVal != null) {
                                 rowUpdateVal.setOnClickListener(new View.OnClickListener() {
-                                    public void onClick(View v) { openUrl(rel); }
+                                    public void onClick(View v) {
+                                        if (apkUrl != null) { promptedUpdate = ""; showUpdatePrompt(ver, apkUrl); }
+                                        else openUrl(rel);
+                                    }
                                 });
                             }
                         } else {
@@ -1641,6 +1657,124 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    // ---------- 应用内更新 ----------
+    private void showUpdatePrompt(final String ver, final String apkUrl) {
+        promptedUpdate = ver;
+        try {
+            new AlertDialog.Builder(this)
+                    .setTitle("发现新版本 " + ver)
+                    .setMessage("当前版本 " + CURRENT_VER + "。\n\n可以直接在这里下载并覆盖安装，账号库和导出文件夹里的 key 都不会动。\n\n更新包来自本项目的 GitHub Release。")
+                    .setPositiveButton("立即更新", new android.content.DialogInterface.OnClickListener() {
+                        public void onClick(android.content.DialogInterface d, int w) { downloadUpdate(ver, apkUrl); }
+                    })
+                    .setNegativeButton("稍后", null)
+                    .setNeutralButton("去网页", new android.content.DialogInterface.OnClickListener() {
+                        public void onClick(android.content.DialogInterface d, int w) { openUrl(apkUrl); }
+                    })
+                    .show();
+        } catch (Throwable t) {
+            log("[更新] 弹窗失败：" + t);
+        }
+    }
+
+    private void downloadUpdate(final String ver, final String apkUrl) {
+        final android.app.ProgressDialog pd = new android.app.ProgressDialog(this);
+        pd.setTitle("正在下载 " + ver);
+        pd.setMessage("0%");
+        pd.setProgressStyle(android.app.ProgressDialog.STYLE_HORIZONTAL);
+        pd.setMax(100);
+        pd.setCancelable(false);
+        try { pd.show(); } catch (Throwable ignored) { }
+        new Thread(new Runnable() {
+            public void run() {
+                File out = null;
+                String err = null;
+                try {
+                    java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(apkUrl).openConnection();
+                    c.setConnectTimeout(15000);
+                    c.setReadTimeout(60000);
+                    c.setInstanceFollowRedirects(true);
+                    c.setRequestProperty("User-Agent", "HousamoAuthKeyManager");
+                    int total = c.getContentLength();
+                    File dir = new File(getExternalFilesDir(null), "update");
+                    if (!dir.exists()) dir.mkdirs();
+                    out = new File(dir, "HousamoAuthKeyManager-" + ver + ".apk");
+                    InputStream in = c.getInputStream();
+                    FileOutputStream fo = new FileOutputStream(out);
+                    byte[] buf = new byte[8192];
+                    int n, got = 0, last = -1;
+                    while ((n = in.read(buf)) > 0) {
+                        fo.write(buf, 0, n);
+                        got += n;
+                        if (total > 0) {
+                            final int pct = (int) (got * 100L / total);
+                            if (pct != last && pct % 5 == 0) {
+                                last = pct;
+                                runOnUiThread(new Runnable() {
+                                    public void run() { pd.setProgress(pct); pd.setMessage(pct + "%"); }
+                                });
+                            }
+                        }
+                    }
+                    fo.flush();
+                    fo.close();
+                    in.close();
+                    if (out.length() < 20000) err = "下载的文件太小，可能不是安装包";
+                } catch (Throwable t) {
+                    err = String.valueOf(t);
+                }
+                final File f = out;
+                final String e = err;
+                runOnUiThread(new Runnable() {
+                    public void run() {
+                        try { pd.dismiss(); } catch (Throwable ignored) { }
+                        if (e != null || f == null) {
+                            log("[更新] 下载失败：" + e);
+                            toast("下载失败，可点「去网页」手动更新");
+                            return;
+                        }
+                        log("[更新] 已下载 " + f.getAbsolutePath() + "（" + f.length() + " 字节）");
+                        installApk(f);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void installApk(File f) {
+        try {
+            if (Build.VERSION.SDK_INT >= 26 && !getPackageManager().canRequestPackageInstalls()) {
+                pendingApk = f;
+                toast("请允许「东放 Key 管家」安装应用，返回后会自动继续");
+                log("[更新] 需要先允许「安装未知应用」，已打开系统设置");
+                Intent i = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + getPackageName()));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(i);
+                return;
+            }
+            pendingApk = null;
+            Uri u = ApkProvider.uriFor(f);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(u, "application/vnd.android.package-archive");
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(i);
+            log("[更新] 已交给系统安装器，按提示「更新」即可，账号数据不受影响");
+        } catch (Throwable t) {
+            log("[更新] 启动安装失败：" + t);
+            toast("启动安装失败，可点「去网页」手动更新");
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (pendingApk != null && (Build.VERSION.SDK_INT < 26 || getPackageManager().canRequestPackageInstalls())) {
+            File f = pendingApk;
+            pendingApk = null;
+            installApk(f);
+        }
     }
 
     private static int compareVer(String a, String b) {
@@ -2223,6 +2357,7 @@ public class MainActivity extends Activity {
         pool.execute(new Runnable() {
             public void run() {
                 // 1. 备份现有 key
+                final boolean[] backupOk = {true};
                 String old = null;
                 byte[] cur = readKeyAt(EXT_KEY);
                 if (cur == null) cur = readKeyAt(PREFS1);
@@ -2230,6 +2365,7 @@ public class MainActivity extends Activity {
                     old = new String(cur).trim();
                     if (old.length() >= 8) {
                         final String saved = backupCurrentKey(old, a.name);
+                        if (saved == null) backupOk[0] = false;
                         final Account bak = new Account("导入前备份 " + stamp(), old);
                         bak.note = saved == null
                                 ? ("导入「" + a.name + "」前自动备份（文件写入失败，只存在账号库）")
@@ -2250,6 +2386,11 @@ public class MainActivity extends Activity {
                                 ? "[备份] 当前 key 已存进账号库（文件写入失败，请手动导出一次）"
                                 : ("[备份] 当前 key 已存到 " + saved));
                     }
+                }
+                if (!backupOk[0]) {
+                    log("[导入已取消] 备份没能写成文件，为避免覆盖掉现在登录的账号，本次导入已中止。请先检查存储权限与剩余空间，然后再点一次导入。");
+                    toast("备份失败，已取消导入");
+                    return;
                 }
                 final String prevKey = old;
                 // 2. 停止游戏
