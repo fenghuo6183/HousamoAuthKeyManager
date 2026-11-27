@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.housamo.authkey"
-    android:versionCode="10"
-    android:versionName="1.0.9">
+    android:versionCode="11"
+    android:versionName="1.0.10">
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
@@ -19,6 +19,8 @@
     </queries>
 
     <application
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher"
         android:label="东放 Key 管家"
         android:allowBackup="true"
         android:requestLegacyExternalStorage="true"
