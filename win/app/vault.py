@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Encrypted multi-account key vault."""
+"""Encrypted multi-account key vault (one file per game)."""
 from __future__ import annotations
 
 import base64
@@ -13,25 +13,46 @@ from . import dpapi
 
 VAULT_VERSION = 1
 HAK_FORMAT = "housamo-authkey-backup"
-HAK_VERSION = 1
+HAK_VERSION = 2
+LEGACY_NAME = "vault.dat"
 
 
-def default_vault_path():
-    base = os.environ.get("APPDATA") or os.path.expanduser("~")
-    folder = os.path.join(base, "HousamoAuthKeyManager")
+def vault_path_for(game_id):
+    from .config import app_dir
+    folder = app_dir()
     os.makedirs(folder, exist_ok=True)
-    return os.path.join(folder, "vault.dat")
+    return os.path.join(folder, "vault.%s.dat" % game_id)
+
+
+def default_vault_path(game_id="housamo"):
+    return vault_path_for(game_id)
+
+
+def migrate_legacy_vault():
+    """Rename the pre-1.2 single vault into the Housamo vault exactly once."""
+    from .config import app_dir
+    folder = app_dir()
+    legacy = os.path.join(folder, LEGACY_NAME)
+    target = os.path.join(folder, "vault.housamo.dat")
+    if os.path.exists(legacy) and not os.path.exists(target):
+        try:
+            os.replace(legacy, target)
+            return True
+        except OSError:
+            return False
+    return False
 
 
 def _fp(text):
     if len(text) <= 8:
         return text
-    return "%s…%s (%d)" % (text[:4], text[-4:], len(text))
+    return "%s\u2026%s (%d)" % (text[:4], text[-4:], len(text))
 
 
 class Vault:
-    def __init__(self, path=None):
-        self.path = path or default_vault_path()
+    def __init__(self, path=None, game_id="housamo"):
+        self.game_id = game_id
+        self.path = path or default_vault_path(game_id)
         self.entries = []
         self.load()
 
@@ -49,6 +70,9 @@ class Vault:
             self.entries = payload.get("entries", [])
         except Exception as exc:
             raise RuntimeError("账号库无法解密（文件可能被复制到了别的电脑）：%s" % exc)
+        for entry in self.entries:
+            entry.setdefault("kind", "account")
+            entry.setdefault("game", self.game_id)
 
     def save(self):
         payload = {"version": VAULT_VERSION, "entries": self.entries}
@@ -60,7 +84,10 @@ class Vault:
         os.replace(tmp, self.path)
 
     # -- entries -------------------------------------------------------
-    def add(self, name, key, note="", source="", device=""):
+    def by_kind(self, kind):
+        return [e for e in self.entries if e.get("kind", "account") == kind]
+
+    def add(self, name, key, note="", source="", device="", kind="account", game=None):
         key = bytes(key)
         text = key.decode("utf-8", "replace")
         digest = hashlib.sha256(key).hexdigest()
@@ -77,6 +104,8 @@ class Vault:
             "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "source": source,
             "device": device,
+            "kind": kind if kind in ("account", "backup") else "account",
+            "game": game or self.game_id,
         }
         self.entries.insert(0, entry)
         self.save()
@@ -117,6 +146,8 @@ class Vault:
         payload = {
             "format": HAK_FORMAT,
             "version": HAK_VERSION,
+            "game": entry.get("game") or self.game_id,
+            "kind": entry.get("kind", "account"),
             "name": entry.get("name"),
             "note": entry.get("note", ""),
             "key_b64": entry.get("key_b64") if include_key else "",
@@ -135,11 +166,18 @@ class Vault:
             raise ValueError("不是有效的 .hak 备份文件")
         if not payload.get("key_b64"):
             raise ValueError("这个 .hak 文件里没有 key（可能是只读导出）")
+        owner = payload.get("game") or ""
+        if owner and owner != self.game_id:
+            from .game import game_by_id
+            raise ValueError("这个备份属于「%s」，请先切换到该游戏再导入。"
+                             % game_by_id(owner).label)
         key = base64.b64decode(payload["key_b64"])
         entry, created = self.add(
             name=payload.get("name") or "导入的账号",
             key=key,
             note=payload.get("note", ""),
             source=payload.get("source", "hak"),
+            kind=payload.get("kind", "account"),
+            game=owner or self.game_id,
         )
         return entry, created
