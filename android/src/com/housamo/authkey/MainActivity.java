@@ -7,6 +7,7 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -66,6 +67,9 @@ public class MainActivity extends Activity {
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean rootChecked = false;
     private boolean hasRoot = false;
+    private boolean shizukuBinder = false;
+    private boolean shizukuGranted = false;
+    static final int REQ_SHIZUKU = 0x5A1;
 
     // ---------- Account ----------
 
@@ -132,6 +136,23 @@ public class MainActivity extends Activity {
         setContentView(buildUi());
         loadVault();
         refreshList();
+        try {
+            rikka.shizuku.Shizuku.addRequestPermissionResultListener(
+                new rikka.shizuku.Shizuku.OnRequestPermissionResultListener() {
+                    public void onRequestPermissionResult(int request, int grantResult) {
+                        if (request != REQ_SHIZUKU) return;
+                        shizukuGranted = grantResult == PackageManager.PERMISSION_GRANTED;
+                        log(shizukuGranted ? "[Shizuku] 授权成功，现在可以免 root 读写游戏数据目录。"
+                                           : "[Shizuku] 授权被拒绝。");
+                        runOnUiThread(new Runnable() {
+                            public void run() {
+                                updateState();
+                            }
+                        });
+                    }
+                });
+        } catch (Throwable ignored) {
+        }
         pool.execute(new Runnable() {
             public void run() {
                 hasRoot = checkRoot();
@@ -141,7 +162,15 @@ public class MainActivity extends Activity {
                         updateState();
                     }
                 });
-                log(hasRoot ? "[root] 已获取 root 权限，可直接读写游戏私有目录。" : "[root] 未获取 root：Android 11+ 无法访问游戏数据目录，请改用 Windows 版（adb 无需 root）。");
+                log(hasRoot ? "[root] 已获取 root 权限，可直接读写游戏私有目录。" : "[root] 未获取 root。若已启动 Shizuku，点上方「Shizuku」授权后即可免 root 读写游戏目录。");
+                shizukuBinder = shizukuAlive();
+                if (shizukuBinder) {
+                    shizukuGranted = shizukuGrantedNow();
+                    log(shizukuGranted ? "[Shizuku] 已连接并授权：走 shell 通道，无需 root。"
+                                       : "[Shizuku] 已连接，尚未授权：点「Shizuku」按钮授权。");
+                } else {
+                    log("[Shizuku] 未连接（未安装 Shizuku 或服务未启动）。");
+                }
                 String found = findGamePackages();
                 log("[游戏] 检测到的相关包名：" + (found.length() == 0 ? "无（确认游戏装在同一台手机上）" : found));
                 log("[游戏] 数据目录 " + EXT_DIR + "：" + (new File(EXT_DIR).exists() ? "存在" : "不存在或无权访问"));
@@ -195,8 +224,15 @@ public class MainActivity extends Activity {
                 askStorage();
             }
         });
+        Button bShizuku = mkBtn("Shizuku");
+        bShizuku.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                askShizuku();
+            }
+        });
         row0.addView(bRefresh, weight());
         row0.addView(bPerm, weight());
+        row0.addView(bShizuku, weight());
         root.addView(row0);
 
         list = new ListView(this);
@@ -313,7 +349,11 @@ public class MainActivity extends Activity {
         if (!rootChecked) sb.append("root 检测中…  ");
         else sb.append(hasRoot ? "root：已授权  " : "root：未授权  ");
         sb.append(gameInstalled ? "游戏：已检测到  " : "游戏：未检测到  ");
-        if (hasRoot) sb.append("root 已授权  ");
+        if (shizukuBinder || shizukuAlive()) {
+            sb.append("Shizuku：").append(shizukuGrantedNow() ? "已授权  " : "待授权  ");
+        } else {
+            sb.append("Shizuku：未连接  ");
+        }
         sb.append("已选：").append(list.getCheckedItemPosition() >= 0 ? accounts.get(list.getCheckedItemPosition()).name : "无");
         tvState.setText(sb.toString());
     }
@@ -440,6 +480,96 @@ public class MainActivity extends Activity {
         return r.code == 0 && s.contains("uid=0");
     }
 
+    // ---------- Shizuku（免 root 的 shell 通道）----------
+
+    private boolean shizukuAlive() {
+        try {
+            return rikka.shizuku.Shizuku.pingBinder();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean shizukuGrantedNow() {
+        try {
+            return rikka.shizuku.Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private boolean shizukuReady() {
+        return shizukuAlive() && shizukuGrantedNow();
+    }
+
+    private boolean hasShell() {
+        return hasRoot || shizukuReady();
+    }
+
+    /** 用 Shizuku 以 shell 身份执行命令（相当于 adb shell，不需要 root）。 */
+    private Res sh(String cmd, int timeoutMs) {
+        Res r = new Res();
+        Process p = null;
+        try {
+            p = rikka.shizuku.Shizuku.newProcess(new String[]{"sh", "-c", cmd}, null, null);
+            final Process fp = p;
+            ByteArrayOutputStream bo = new ByteArrayOutputStream();
+            ByteArrayOutputStream be = new ByteArrayOutputStream();
+            Thread t1 = drain(fp.getInputStream(), bo);
+            Thread t2 = drain(fp.getErrorStream(), be);
+            Thread killer = new Thread(new Runnable() {
+                public void run() {
+                    try {
+                        Thread.sleep(timeoutMs);
+                        fp.destroy();
+                    } catch (Exception ignored) {
+                    }
+                }
+            });
+            killer.setDaemon(true);
+            killer.start();
+            r.code = p.waitFor();
+            t1.join(1500);
+            t2.join(1500);
+            r.out = bo.toByteArray();
+            r.err = new String(be.toByteArray(), "UTF-8");
+        } catch (Throwable e) {
+            r.err = "shizuku: " + e;
+        } finally {
+            if (p != null) p.destroy();
+        }
+        return r;
+    }
+
+    /** 统一入口：优先 root，其次 Shizuku。 */
+    private Res shell(String cmd, int timeoutMs) {
+        if (hasRoot) return su(cmd, timeoutMs);
+        if (shizukuReady()) return sh(cmd, timeoutMs);
+        Res r = new Res();
+        r.err = "没有可用权限（既无 root，也未连接 Shizuku）";
+        return r;
+    }
+
+    private void askShizuku() {
+        if (!shizukuAlive()) {
+            log("[Shizuku] 未检测到 Shizuku 服务：请先安装并启动 Shizuku（应用需通过无线调试启动一次）。");
+            toast("请先启动 Shizuku");
+            return;
+        }
+        if (shizukuGrantedNow()) {
+            log("[Shizuku] 已授权，可以直接免 root 提取/导入。");
+            toast("Shizuku 已授权");
+            updateState();
+            return;
+        }
+        try {
+            rikka.shizuku.Shizuku.requestPermission(REQ_SHIZUKU);
+            log("[Shizuku] 已弹出授权请求，请在 Shizuku 中点击「允许」。");
+        } catch (Throwable t) {
+            log("[Shizuku] 请求授权失败：" + t);
+        }
+    }
+
     // ---------- 文件读写 ----------
 
     private static boolean looksLikeKey(byte[] d) {
@@ -483,7 +613,7 @@ public class MainActivity extends Activity {
         boolean prefs = path.endsWith(".xml");
         byte[] d = directRead(path);
         if (d != null && (prefs ? d.length > 0 : looksLikeKey(d))) return trim(d);
-        Res r = su("cat '" + path + "' 2>/dev/null", 15000);
+        Res r = shell("cat '" + path + "' 2>/dev/null", 15000);
         if (r.code == 0 && r.out.length > 0 && (prefs ? true : looksLikeKey(r.out))) return trim(r.out);
         return null;
     }
@@ -604,8 +734,8 @@ public class MainActivity extends Activity {
     }
 
     private byte[] scanByFind() {
-        if (!hasRoot) return null;
-        Res r = su("find /sdcard /data/data/" + PKG + " -name AuthKey -type f 2>/dev/null | head -5", 25000);
+        if (!hasShell()) return null;
+        Res r = shell("find /sdcard /data/data/" + PKG + " -name AuthKey -type f 2>/dev/null | head -5", 25000);
         String s = new String(r.out).trim();
         if (s.length() == 0) return null;
         String first = s.split("\n")[0].trim();
@@ -701,11 +831,7 @@ public class MainActivity extends Activity {
                     }
                 }
                 // 2. 停止游戏
-                if (hasRoot) {
-                    su("am force-stop " + PKG, 15000);
-                } else {
-                    su("am force-stop " + PKG, 8000);
-                }
+                shell("am force-stop " + PKG, 15000);
                 log("[停止] 已尝试停止游戏进程");
                 // 3. 写入
                 boolean ok = writeKey(a.key.getBytes());
@@ -757,6 +883,32 @@ public class MainActivity extends Activity {
             if (chk != null && new String(chk).trim().equals(new String(data).trim())) return true;
             log("[root] 外部目录写入未通过校验，尝试私有 prefs …");
             return writePrefs(data, src);
+        }
+        // Shizuku：以 shell 身份写（等同 adb push），不需要 root
+        if (shizukuReady()) {
+            File stage = new File(getExternalFilesDir(null), "authkey.tmp");
+            FileOutputStream so = null;
+            try {
+                so = new FileOutputStream(stage);
+                so.write(data);
+                so.flush();
+            } catch (Exception e) {
+                log("[err] 写暂存文件失败：" + e);
+                return false;
+            } finally {
+                try {
+                    if (so != null) so.close();
+                } catch (Exception ignored) {
+                }
+            }
+            shell("mkdir -p '" + EXT_DIR + "'", 10000);
+            Res r = shell("cp '" + stage.getAbsolutePath() + "' '" + EXT_KEY + "'", 15000);
+            stage.delete();
+            if (r.code != 0) log("[err] Shizuku 写入失败：" + r.err.trim());
+            byte[] chk = readKeyAt(EXT_KEY);
+            if (chk != null && new String(chk).trim().equals(new String(data).trim())) return true;
+            log("[Shizuku] 写入未通过回读校验。");
+            return false;
         }
         // 免 root（Android 10 及以下）
         File f = new File(EXT_KEY);
