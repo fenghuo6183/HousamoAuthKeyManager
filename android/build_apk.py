@@ -18,8 +18,8 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
-VERSION_CODE = "15"
-VERSION_NAME = "1.0.14"
+VERSION_CODE = "16"
+VERSION_NAME = "1.0.15"
 MIN_SDK = "24"
 LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar")]
 
@@ -90,14 +90,19 @@ def main():
     run([javac, "-encoding", "UTF-8", "-source", "8", "-target", "8",
          "-classpath", cp, "-nowarn", "-d", os.path.join(BUILD, "classes")] + srcs)
 
-    classes = []
+    # 类文件太多会超过 Windows 命令行 8191 字符上限，先打成 jar 再交给 d8
     cdir = os.path.join(BUILD, "classes")
-    for dirpath, _, files in os.walk(cdir):
-        for f in files:
-            if f.endswith(".class"):
-                classes.append(os.path.join(dirpath, f))
+    classes_jar = os.path.join(BUILD, "classes.jar")
+    if os.path.exists(classes_jar):
+        os.remove(classes_jar)
+    with zipfile.ZipFile(classes_jar, "w", zipfile.ZIP_DEFLATED) as z:
+        for dirpath, _, files in os.walk(cdir):
+            for f in files:
+                if f.endswith(".class"):
+                    full = os.path.join(dirpath, f)
+                    z.write(full, os.path.relpath(full, cdir).replace(os.sep, "/"))
     run([d8, "--lib", ANDROID_JAR, "--min-api", MIN_SDK, "--release",
-         "--output", os.path.join(BUILD, "dex")] + classes + [p for p in LIBS if os.path.exists(p)])
+         "--output", os.path.join(BUILD, "dex"), classes_jar] + [p for p in LIBS if os.path.exists(p)])
 
     dex = os.path.join(BUILD, "dex", "classes.dex")
     if not os.path.exists(dex):
