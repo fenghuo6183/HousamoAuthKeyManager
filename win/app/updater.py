@@ -21,7 +21,7 @@ import zipfile
 
 from . import config
 
-UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest"
+UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases?per_page=20"
 ASSET_NAME = "AuthKeyManager-win64.zip"
 MIRRORS = ("https://gh-proxy.com/", "https://ghfast.top/")
 STATE_NAME = "update_state.json"
@@ -56,11 +56,35 @@ def _asset(asset):
             "digest": asset.get("digest") or ""}
 
 
+def has_desktop_asset(release):
+    for asset in (release or {}).get("assets") or []:
+        if (asset.get("name") or "") == ASSET_NAME:
+            return True
+    return False
+
+
+def select_release(releases):
+    """Newest published release that actually ships the desktop zip.
+
+    The repo also carries Android-only releases; those must never be offered to
+    the desktop app (and a Windows-only release must never be the "latest" that
+    the Android update check sees).
+    """
+    candidates = [r for r in (releases or []) if not (r or {}).get("draft")]
+    for release in candidates:
+        if has_desktop_asset(release):
+            return release
+    return {}
+
+
 def fetch_latest(timeout=15):
     request = urllib.request.Request(UP_API, headers={"User-Agent": _UA,
                                                       "Accept": "application/vnd.github+json"})
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+        payload = json.loads(response.read().decode("utf-8"))
+    if isinstance(payload, dict):
+        payload = [payload]
+    return select_release(payload)
 
 
 # -- paths / state -----------------------------------------------------
