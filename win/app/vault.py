@@ -159,7 +159,8 @@ class Vault:
             json.dump(payload, fh, ensure_ascii=False, indent=2)
         return payload
 
-    def import_hak(self, path):
+    def read_hak(self, path):
+        """Parse a .hak file without touching the vault yet."""
         with open(path, "r", encoding="utf-8") as fh:
             payload = json.load(fh)
         if payload.get("format") != HAK_FORMAT:
@@ -171,13 +172,57 @@ class Vault:
             from .game import game_by_id
             raise ValueError("这个备份属于「%s」，请先切换到该游戏再导入。"
                              % game_by_id(owner).label)
-        key = base64.b64decode(payload["key_b64"])
+        return payload, base64.b64decode(payload["key_b64"])
+
+    def add_hak_payload(self, payload, key):
         entry, created = self.add(
             name=payload.get("name") or "导入的账号",
             key=key,
             note=payload.get("note", ""),
             source=payload.get("source", "hak"),
             kind=payload.get("kind", "account"),
-            game=owner or self.game_id,
+            game=payload.get("game") or self.game_id,
         )
         return entry, created
+
+    def import_hak(self, path):
+        payload, key = self.read_hak(path)
+        return self.add_hak_payload(payload, key)
+
+    def find_same(self, key):
+        """Entry holding exactly this key, if any."""
+        digest = hashlib.sha256(bytes(key)).hexdigest()
+        for entry in self.entries:
+            if entry.get("sha256") == digest:
+                return entry
+        return None
+
+    def find_by_name(self, name):
+        for entry in self.entries:
+            if (entry.get("name") or "") == name:
+                return entry
+        return None
+
+    def replace_key(self, entry_id, key):
+        """Swap one entry's key in place; the old key becomes a backup entry."""
+        entry = self.get(entry_id)
+        if not entry:
+            return None, None
+        key = bytes(key)
+        digest = hashlib.sha256(key).hexdigest()
+        if entry.get("sha256") == digest:
+            return entry, None
+        old_key = self.key_of(entry)
+        old_fp = entry.get("fingerprint") or ""
+        entry["key_b64"] = base64.b64encode(key).decode("ascii")
+        entry["fingerprint"] = _fp(key.decode("utf-8", "replace"))
+        entry["sha256"] = digest
+        entry["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self.save()
+        backup, _ = self.add(
+            name=(entry.get("name") or "账号") + " 换 key 前的旧 key",
+            key=old_key,
+            note="旧指纹 %s" % old_fp,
+            source="replace", kind="backup",
+            game=entry.get("game") or self.game_id)
+        return entry, backup
