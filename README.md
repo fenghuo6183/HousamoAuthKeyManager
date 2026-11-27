@@ -75,7 +75,9 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.17.apk` 安装（Android 7.0+）。
+到 [v1.0.17 Release](../../releases/tag/v1.0.17) 下载 `HousamoAuthKeyManager-1.0.17.apk` 安装（Android 7.0+）。
+
+> v1.1 目前只有 Windows 版；安卓端功能同步完会补上同版本 APK。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
