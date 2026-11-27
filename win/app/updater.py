@@ -39,6 +39,19 @@ def is_newer(remote_tag, local_version):
     return parse_version(remote_tag) > parse_version(local_version)
 
 
+FORCE_MARKERS = ("force-update", "强制更新")
+
+
+def is_forced(release):
+    """True when the release says it must be installed (重要/安全修复).
+
+    发版时在 release 说明（或标题）里写 force-update，客户端就不给跳过。
+    """
+    release = release or {}
+    text = "%s\n%s" % (release.get("body") or "", release.get("name") or "")
+    return any(marker in text for marker in FORCE_MARKERS)
+
+
 def pick_asset(release):
     assets = (release or {}).get("assets") or []
     for asset in assets:
