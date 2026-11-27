@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.23";
+    static final String CURRENT_VER = "1.0.24";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -3924,6 +3924,7 @@ public class MainActivity extends Activity {
                 String tag = null;
                 String url = null;
                 String apk = null;
+                boolean forced = false;
                 try {
                     java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(
                             "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases?per_page=20").openConnection();
@@ -3950,8 +3951,11 @@ public class MainActivity extends Activity {
                         int from = tags.get(i);
                         int to = i + 1 < tags.size() ? tags.get(i + 1) : body.length();
                         String seg = body.substring(from, to);
+                        // 发版时在 release 说明里写 force-update（或「强制更新」），这个版本就必须装，不能跳过。
+                        boolean segForced = seg.indexOf("force-update") >= 0 || seg.indexOf("强制更新") >= 0;
                         java.util.regex.Matcher ma = java.util.regex.Pattern.compile("\"browser_download_url\"\\s*:\\s*\"([^\"]+\\.apk)\"").matcher(seg);
                         if (!ma.find()) continue;
+                        forced = segForced;
                         tag = names.get(i);
                         apk = ma.group(1);
                         java.util.regex.Matcher mu = java.util.regex.Pattern.compile("\"html_url\"\\s*:\\s*\"([^\"]+)\"").matcher(seg);
@@ -3977,6 +3981,7 @@ public class MainActivity extends Activity {
                 }
                 final String ver = tag == null ? "" : tag.replace("v", "");
                 final String apkUrl = apk;
+                final boolean forcedFlag = forced;
                 final String rel = url == null ? "https://github.com/fenghuo6183/HousamoAuthKeyManager/releases" : url;
                 final int cmp = ver.length() == 0 ? 0 : compareVer(ver, CURRENT_VER);
                 runOnUiThread(new Runnable() {
@@ -3989,15 +3994,18 @@ public class MainActivity extends Activity {
                         if (cmp > 0) {
                             log("[更新] 发现新版本 " + ver + (apkUrl == null ? "（该版本没有 APK 资产，将跳网页）" : ""));
                             if (apkUrl != null) {
-                                if (manual) promptedUpdate = "";
-                                if (!promptedUpdate.equals(ver)) showUpdatePrompt(ver, apkUrl);
+                                if (manual || forcedFlag) promptedUpdate = "";
+                                if (forcedFlag || !promptedUpdate.equals(ver)) showUpdatePrompt(ver, apkUrl, forcedFlag);
+                            } else if (forcedFlag) {
+                                promptedUpdate = "";
+                                showUpdatePrompt(ver, null, true);
                             } else {
                                 toast("发现新版本 " + ver);
                             }
                             if (rowUpdateVal != null) {
                                 rowUpdateVal.setOnClickListener(new View.OnClickListener() {
                                     public void onClick(View v) {
-                                        if (apkUrl != null) { promptedUpdate = ""; showUpdatePrompt(ver, apkUrl); }
+                                        if (apkUrl != null) { promptedUpdate = ""; showUpdatePrompt(ver, apkUrl, forcedFlag); }
                                         else openUrl(rel);
                                     }
                                 });
@@ -4015,30 +4023,45 @@ public class MainActivity extends Activity {
 
     // ---------- 应用内更新 ----------
     private void showUpdatePrompt(final String ver, final String apkUrl) {
+        showUpdatePrompt(ver, apkUrl, false);
+    }
+
+    /** forced=true：重要/安全修复的版本，不给「稍后再说」，点外面和返回键都关不掉。 */
+    private void showUpdatePrompt(final String ver, final String apkUrl, final boolean forced) {
         promptedUpdate = ver;
         try {
             LinearLayout c = dlgCard();
-            dlgTitle(c, "发现新版本 " + ver);
-            dlgSub(c, "当前是 " + CURRENT_VER + "。可以直接在这里下载覆盖安装，账号库和导出文件夹里的 key 都不会动。");
+            dlgTitle(c, forced ? "必须更新到 " + ver : "发现新版本 " + ver);
+            dlgSub(c, forced
+                    ? "这一版修的是重要问题（安全或数据相关），旧版会一直带着它跑，所以这版不能跳过。当前是 "
+                      + CURRENT_VER + "，装好之后账号库、备份、导出路径都不动。"
+                    : "当前是 " + CURRENT_VER + "。可以直接在这里下载覆盖安装，账号库和导出文件夹里的 key 都不会动。");
             c.addView(dlgStep(1, "点下面的「立即更新」", "安装包在 App 内下载，进度会显示在弹窗里。"));
             c.addView(dlgStep(2, "系统问「是否安装」时点允许", "如果提示「禁止安装未知应用」，会先带你去开那个开关，回来自动继续。"));
             c.addView(dlgStep(3, "装好直接打开", "账号、备份、导出路径都还在原地。"));
             final AlertDialog[] holder = new AlertDialog[1];
-            c.addView(dlgPrimary("立即更新", new View.OnClickListener() {
-                public void onClick(View v) {
-                    if (holder[0] != null) holder[0].dismiss();
-                    downloadUpdate(ver, apkUrl);
-                }
-            }));
+            if (apkUrl != null) {
+                c.addView(dlgPrimary("立即更新", new View.OnClickListener() {
+                    public void onClick(View v) {
+                        if (holder[0] != null) holder[0].dismiss();
+                        downloadUpdate(ver, apkUrl);
+                    }
+                }));
+            }
             LinearLayout row = new LinearLayout(this);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setPadding(0, dp(6), 0, 0);
             row.addView(dlgGhost("去网页下载", new View.OnClickListener() {
-                public void onClick(View v) { openUrl(apkUrl); }
+                public void onClick(View v) {
+                    openUrl(apkUrl != null ? apkUrl
+                            : "https://github.com/fenghuo6183/HousamoAuthKeyManager/releases");
+                }
             }, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
-            row.addView(dlgGhost("稍后再说", new View.OnClickListener() {
-                public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
-            }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            if (!forced) {
+                row.addView(dlgGhost("稍后再说", new View.OnClickListener() {
+                    public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
+                }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            }
             c.addView(row);
             holder[0] = showCard(c, false);
         } catch (Throwable t) {
