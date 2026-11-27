@@ -53,7 +53,7 @@
 
 ## 使用（Android）
 
-下载 Release 里的 `HousamoAuthKeyManager-1.0.7.apk` 安装（Android 7.0+）。
+下载 Release 里的 `HousamoAuthKeyManager-1.0.8.apk` 安装（Android 7.0+）。
 
 - **有 root**：直接用，提取 / 导入都走 root 通道。
 - **无 root + Shizuku（推荐给只在手机上操作的）**：
@@ -121,7 +121,7 @@ pip install pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManager\
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.7.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.8.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
 
 ## 常见问题
@@ -147,6 +147,7 @@ Windows 端用 DPAPI 加密，绑定当前 Windows 账号；Android 端存在应
 
 ## 更新日志
 
+- **v1.0.8** — 修掉设置页「版本」写死成 1.0.5 的显示错误，现在直接读系统里的真实版本号（如 1.0.8 (9)）；其余与 1.0.7 相同。
 - **v1.0.7** — 支持 App 内直接更新：启动发现新版本就弹窗，点「立即更新」当场下载并覆盖安装（不再跳浏览器）；**备份失败则中止导入**，绝不在没备份的情况下覆盖原 key。
 - **v1.0.6** — 账号页自动读取导出文件夹里的 key（App 数据丢了文件夹还在就能恢复）；导入前自动备份原 key 到 `Download/东放Key/导入前备份/`，任务页显示最近一次备份路径，写入失败会自动回写原 key；首次启动弹免责声明，必须读完并等满 10 秒才能同意；Windows 端按钮文案同步改成「提取当前账号的 key」「将当前选择的 key 导入到游戏」。
 - **v1.0.5** — 设置页补上「项目主页」一键跳转；每次启动自动检查更新；修掉若干界面细节。
