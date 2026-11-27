@@ -11,8 +11,8 @@ import java.io.File;
 import java.io.FileNotFoundException;
 
 /**
- * 只服务于「应用内更新」：把下载到 getExternalFilesDir("update") 里的 APK
- * 以 content:// 形式交给系统安装器（Android 7+ 不再接受 file:// 的安装 intent）。
+ * 1) 应用内更新：把 getExternalFilesDir("update") 里的 APK 以 content:// 交给系统安装器；
+ * 2) 二维码分享：把 cache/qr 里的 PNG 交给别的 App（file:// 在 Android 7+ 会被拒）。
  */
 public class ApkProvider extends ContentProvider {
 
@@ -22,8 +22,18 @@ public class ApkProvider extends ContentProvider {
         return Uri.parse("content://" + AUTHORITY + "/" + f.getName());
     }
 
+    public static Uri uriForQr(File f) {
+        return Uri.parse("content://" + AUTHORITY + "/qr/" + f.getName());
+    }
+
     private File base() {
         return new File(getContext().getExternalFilesDir(null), "update");
+    }
+
+    private File qrBase() {
+        File d = new File(getContext().getCacheDir(), "qr");
+        if (!d.exists()) d.mkdirs();
+        return d;
     }
 
     @Override
@@ -33,16 +43,24 @@ public class ApkProvider extends ContentProvider {
 
     @Override
     public ParcelFileDescriptor openFile(Uri uri, String mode) throws FileNotFoundException {
+        java.util.List<String> seg = uri.getPathSegments();
         String name = uri.getLastPathSegment();
         if (name == null || name.contains("/") || name.contains("..")) {
             throw new FileNotFoundException("bad name: " + uri);
         }
-        File f = new File(base(), name);
+        File f;
+        if (seg.size() >= 2 && "qr".equals(seg.get(0))) {
+            f = new File(qrBase(), name);
+        } else {
+            f = new File(base(), name);
+        }
         return ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_ONLY);
     }
 
     @Override
     public String getType(Uri uri) {
+        java.util.List<String> seg = uri.getPathSegments();
+        if (seg.size() >= 2 && "qr".equals(seg.get(0))) return "image/png";
         return "application/vnd.android.package-archive";
     }
 
