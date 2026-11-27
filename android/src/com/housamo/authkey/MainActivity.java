@@ -60,7 +60,7 @@ public class MainActivity extends Activity {
     static final String PREFS2 = "/data/user/0/" + PKG + "/shared_prefs/" + PKG + ".v2.playerprefs.xml";
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.8";
+    static final String CURRENT_VER = "1.0.9";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -78,6 +78,10 @@ public class MainActivity extends Activity {
     private ListView list;
     private AccountAdapter adapter;
     private final List<Account> accounts = new ArrayList<Account>();
+    private final List<Account> accView = new ArrayList<Account>();
+    private int accTab = 0;
+    private Button segA, segB, bMain, bRename;
+    private TextView emptyHint, tvAccHint;
     private final ExecutorService pool = Executors.newSingleThreadExecutor();
     private boolean rootChecked = false;
     private boolean hasRoot = false;
@@ -93,6 +97,7 @@ public class MainActivity extends Activity {
         String key = "";
         String created = "";
         String folder = "";
+        String kind = "account";
 
         Account() {
         }
@@ -103,9 +108,22 @@ public class MainActivity extends Activity {
             created = stamp();
         }
 
+        boolean isBackup() {
+            return "backup".equals(kind);
+        }
+
         String fp() {
             if (key.length() <= 20) return "短key(" + key.length() + ")";
             return hash(key).substring(0, 16) + " | " + key.length() + "B";
+        }
+
+        String fpShort() {
+            if (key.length() <= 20) return "短key";
+            return hash(key).substring(0, 16);
+        }
+
+        String sizeText() {
+            return key.length() + "B";
         }
 
         JSONObject toJson() throws Exception {
@@ -115,6 +133,7 @@ public class MainActivity extends Activity {
             o.put("key", key);
             o.put("created", created);
             o.put("folder", folder);
+            o.put("kind", kind);
             return o;
         }
 
@@ -125,6 +144,8 @@ public class MainActivity extends Activity {
             a.key = o.optString("key", "");
             a.created = o.optString("created", "");
             a.folder = o.optString("folder", "");
+            a.kind = o.optString("kind", "");
+            if (a.kind.length() == 0) a.kind = a.name.startsWith("导入前备份") ? "backup" : "account";
             return a;
         }
     }
@@ -535,6 +556,9 @@ public class MainActivity extends Activity {
     }
 
     private LinearLayout buildAccounts() {
+        if (getIntent() != null && getIntent().hasExtra("accTab")) {
+            accTab = getIntent().getIntExtra("accTab", 0) == 1 ? 1 : 0;
+        }
         LinearLayout p = page();
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
@@ -547,8 +571,25 @@ public class MainActivity extends Activity {
         tvState = new TextView(this);
         tvState.setTextSize(12);
         tvState.setTextColor(Color.parseColor("#8A93A0"));
-        tvState.setPadding(dp(2), 0, 0, dp(6));
+        tvState.setPadding(dp(2), 0, 0, dp(8));
         p.addView(tvState);
+
+        LinearLayout seg = new LinearLayout(this);
+        seg.setOrientation(LinearLayout.HORIZONTAL);
+        segA = mkBtn("账号", false);
+        segB = mkBtn("备份", false);
+        segA.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { switchAccTab(0); }
+        });
+        segB.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { switchAccTab(1); }
+        });
+        LinearLayout.LayoutParams s1 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        LinearLayout.LayoutParams s2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        s2.setMargins(dp(8), 0, 0, 0);
+        seg.addView(segA, s1);
+        seg.addView(segB, s2);
+        p.addView(seg, cardParams(0));
 
         LinearLayout rf = card();
         TextView rfVal = value(0, "账号库 + 导出文件夹");
@@ -560,11 +601,15 @@ public class MainActivity extends Activity {
         }));
         p.addView(rf, cardParams(0));
 
-        LinearLayout ac = card();
+        android.widget.FrameLayout listWrap = new android.widget.FrameLayout(this);
         list = new ListView(this);
         list.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
         list.setDivider(null);
-        list.setSelector(roundRect(Color.parseColor("#EEF3FF"), 10, 0, 0));
+        list.setSelector(roundRect(Color.TRANSPARENT, 0, 0, 0));
+        list.setPadding(0, dp(8), 0, dp(8));
+        list.setClipToPadding(false);
+        list.setBackgroundColor(Color.TRANSPARENT);
+        list.setCacheColorHint(Color.TRANSPARENT);
         adapter = new AccountAdapter();
         list.setAdapter(adapter);
         list.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -576,21 +621,37 @@ public class MainActivity extends Activity {
             public boolean onItemLongClick(AdapterView<?> parent, View v, int pos, long id) {
                 list.setItemChecked(pos, true);
                 updateState();
-                doCopy();
+                if (accTab == 1) doImport(); else doCopy();
                 return true;
             }
         });
-        ac.addView(list, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-        p.addView(ac, cardParams(1));
+        listWrap.addView(list, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        emptyHint = new TextView(this);
+        emptyHint.setTextSize(12);
+        emptyHint.setTextColor(Color.parseColor("#9AA3B0"));
+        emptyHint.setGravity(Gravity.CENTER);
+        emptyHint.setPadding(dp(24), dp(10), dp(24), dp(10));
+        android.widget.FrameLayout.LayoutParams ep = new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER);
+        listWrap.addView(emptyHint, ep);
+        p.addView(listWrap, cardParams(1));
 
         LinearLayout op = card();
+        tvAccHint = new TextView(this);
+        tvAccHint.setTextSize(11);
+        tvAccHint.setTextColor(Color.parseColor("#9AA3B0"));
+        tvAccHint.setPadding(dp(2), dp(8), dp(2), dp(6));
+        op.addView(tvAccHint);
         LinearLayout row1 = new LinearLayout(this);
         row1.setOrientation(LinearLayout.HORIZONTAL);
-        Button bCopy = mkBtn("复制", false);
-        bCopy.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { doCopy(); }
+        bMain = mkBtn("复制", false);
+        bMain.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (accTab == 1) doImport(); else doCopy();
+            }
         });
-        Button bRename = mkBtn("重命名", false);
+        bRename = mkBtn("重命名", false);
         bRename.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doRename(); }
         });
@@ -598,7 +659,7 @@ public class MainActivity extends Activity {
         bDel.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { doDelete(); }
         });
-        row1.addView(bCopy, weight());
+        row1.addView(bMain, weight());
         row1.addView(bRename, weight());
         row1.addView(bDel, weight());
         op.addView(row1);
@@ -714,48 +775,71 @@ public class MainActivity extends Activity {
     }
 
     private class AccountAdapter extends android.widget.BaseAdapter {
-        public int getCount() { return accounts.size(); }
-        public Object getItem(int i) { return accounts.get(i); }
+        public int getCount() { return accView.size(); }
+        public Object getItem(int i) { return accView.get(i); }
         public long getItemId(int i) { return i; }
 
         public View getView(int pos, View convert, ViewGroup parent) {
-            LinearLayout row = new LinearLayout(MainActivity.this);
-            row.setOrientation(LinearLayout.HORIZONTAL);
-            row.setGravity(Gravity.CENTER_VERTICAL);
-            row.setPadding(dp(10), dp(11), dp(12), dp(11));
-            Account a = accounts.get(pos);
+            Account a = accView.get(pos);
             boolean on = list != null && list.getCheckedItemPosition() == pos;
+
+            LinearLayout box = new LinearLayout(MainActivity.this);
+            box.setOrientation(LinearLayout.HORIZONTAL);
+            box.setGravity(Gravity.CENTER_VERTICAL);
+            box.setPadding(dp(12), dp(11), dp(10), dp(11));
+            box.setBackground(roundRect(on ? Color.parseColor("#F2F6FF") : Color.WHITE,
+                    12, on ? Color.parseColor("#AFC7FF") : Color.parseColor("#EBEFF5"), 1));
 
             LinearLayout col = new LinearLayout(MainActivity.this);
             col.setOrientation(LinearLayout.VERTICAL);
+
             TextView name = new TextView(MainActivity.this);
-            name.setText((pos + 1) + ". " + a.name);
-            name.setTextSize(14);
+            name.setText(a.isBackup() ? a.name.replace("导入前备份", "备份") : a.name);
+            name.setTextSize(15);
+            name.setSingleLine(true);
+            name.setEllipsize(android.text.TextUtils.TruncateAt.END);
             name.setTextColor(Color.parseColor("#101418"));
-            TextView sub = new TextView(MainActivity.this);
-            sub.setText(a.fp() + "  \u00B7  " + a.created);
-            sub.setTextSize(11);
-            sub.setTextColor(Color.parseColor("#8A93A0"));
-            sub.setPadding(0, dp(2), 0, 0);
+            name.setTypeface(null, android.graphics.Typeface.BOLD);
+
+            TextView meta = new TextView(MainActivity.this);
+            meta.setText(a.isBackup()
+                    ? ("指纹 " + a.fpShort() + "  ·  " + a.sizeText() + "  ·  原 key 副本")
+                    : ("指纹 " + a.fpShort() + "  ·  " + a.sizeText() + "  ·  " + a.created));
+            meta.setTextSize(11);
+            meta.setTextColor(Color.parseColor(a.isBackup() ? "#A3741A" : "#5B6572"));
+            meta.setPadding(0, dp(3), 0, 0);
+
             TextView path = new TextView(MainActivity.this);
             boolean exported = a.folder != null && a.folder.length() > 0;
-            path.setText(exported ? a.folder : expectedPath(a.name) + "（未导出，任务页可导出）");
+            path.setText(exported ? a.folder
+                    : (a.isBackup() ? "只在账号库里，还没写成文件" : expectedPath(a.name) + "（未导出）"));
             path.setTextSize(10);
-            path.setTextColor(Color.parseColor(exported ? "#7C8794" : "#B9C0CB"));
-            path.setPadding(0, dp(2), 0, 0);
+            path.setSingleLine(true);
+            path.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            path.setTextColor(Color.parseColor("#9AA3B0"));
+            path.setPadding(0, dp(3), 0, 0);
+
             col.addView(name);
-            col.addView(sub);
+            col.addView(meta);
             col.addView(path);
 
             TextView dot = new TextView(MainActivity.this);
-            dot.setText(on ? "\u25CF" : "\u25CB");
-            dot.setTextSize(15);
-            dot.setTextColor(Color.parseColor(on ? "#2F6BFF" : "#C9D0DA"));
-            dot.setPadding(dp(8), 0, 0, 0);
+            dot.setText(on ? "✓" : "");
+            dot.setGravity(Gravity.CENTER);
+            dot.setTextSize(12);
+            dot.setTextColor(Color.WHITE);
+            dot.setBackground(roundRect(on ? Color.parseColor("#2F6BFF") : Color.parseColor("#E6EAF1"), 20, 0, 0));
+            LinearLayout.LayoutParams dl = new LinearLayout.LayoutParams(dp(22), dp(22));
+            dl.setMargins(dp(10), 0, 0, 0);
 
-            row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            row.addView(dot);
-            return row;
+            box.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            box.addView(dot, dl);
+
+            LinearLayout wrap = new LinearLayout(MainActivity.this);
+            wrap.setOrientation(LinearLayout.VERTICAL);
+            wrap.setPadding(dp(2), dp(3), dp(2), dp(3));
+            wrap.addView(box, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            return wrap;
         }
     }
 
@@ -1007,12 +1091,12 @@ public class MainActivity extends Activity {
             rowPermVal.setText(!alive ? "未连接" : (granted ? "已授权" : "点此授权"));
             rowPermVal.setTextColor(!alive ? noColor : (granted ? okColor : grayColor));
         }
-        if (rowCount != null) rowCount.setText(accounts.size() + " 个");
+        if (rowCount != null) rowCount.setText(countAccounts() + " 个账号 · " + countBackups() + " 个备份");
         if (tvState != null) {
             Account a = selected();
             tvState.setText(a == null ? "已选：无" : "已选：" + a.name + "  ·  " + a.fp());
         }
-        if (adapter != null) adapter.notifyDataSetChanged();
+        refreshAccountsView();
         if (rowSelVal != null) {
             Account a = selected();
             rowSelVal.setText(a == null ? "未选择" : a.name + "  ·  " + a.fp());
@@ -1408,9 +1492,77 @@ public class MainActivity extends Activity {
     }
 
     private Account selected() {
+        if (list == null) return null;
         int p = list.getCheckedItemPosition();
-        if (p < 0 || p >= accounts.size()) return null;
-        return accounts.get(p);
+        if (p < 0 || p >= accView.size()) return null;
+        return accView.get(p);
+    }
+
+    private void switchAccTab(int tab) {
+        accTab = tab;
+        if (list != null) list.clearChoices();
+        refreshAccountsView();
+        updateState();
+    }
+
+    private void selectAccount(Account a) {
+        if (list == null || a == null) return;
+        int i = accView.indexOf(a);
+        if (i >= 0) list.setItemChecked(i, true);
+    }
+
+    private int countAccounts() {
+        int n = 0;
+        for (Account a : accounts) if (!a.isBackup()) n++;
+        return n;
+    }
+
+    private int countBackups() {
+        int n = 0;
+        for (Account a : accounts) if (a.isBackup()) n++;
+        return n;
+    }
+
+    private void styleSeg(Button b, boolean active) {
+        if (b == null) return;
+        if (active) {
+            b.setTextColor(Color.WHITE);
+            b.setBackground(roundRect(Color.parseColor("#2F6BFF"), 10, 0, 0));
+        } else {
+            b.setTextColor(Color.parseColor("#5B6572"));
+            b.setBackground(roundRect(Color.parseColor("#F3F5F9"), 10, 0, 0));
+        }
+    }
+
+    private void refreshAccountsView() {
+        if (accView == null) return;
+        accView.clear();
+        for (Account a : accounts) {
+            if (a.isBackup() == (accTab == 1)) accView.add(a);
+        }
+        int na = countAccounts(), nb = countBackups();
+        if (segA != null) segA.setText("账号 " + na);
+        if (segB != null) segB.setText("备份 " + nb);
+        styleSeg(segA, accTab == 0);
+        styleSeg(segB, accTab == 1);
+        if (bMain != null) bMain.setText(accTab == 0 ? "复制" : "导入到游戏");
+        if (bRename != null) bRename.setVisibility(accTab == 0 ? View.VISIBLE : View.GONE);
+        if (tvAccHint != null) {
+            tvAccHint.setText(accTab == 0
+                    ? "选中一个账号：复制它的 key、改名，或去「任务」页导入到游戏。"
+                    : "备份是每次导入前自动存下的原 key。选中一条点「导入到游戏」就能还原回去。");
+        }
+        if (emptyHint != null) {
+            if (accView.isEmpty()) {
+                emptyHint.setVisibility(View.VISIBLE);
+                emptyHint.setText(accTab == 0
+                        ? "还没有账号。去「任务」页点「提取当前账号的 key」。"
+                        : "还没有备份。每次导入前，游戏里原来的 key 会自动存到这里。");
+            } else {
+                emptyHint.setVisibility(View.GONE);
+            }
+        }
+        if (adapter != null) adapter.notifyDataSetChanged();
     }
 
     // ---------- 业务 ----------
@@ -1552,8 +1704,9 @@ public class MainActivity extends Activity {
         a.note = "来源：" + source;
         accounts.add(a);
         saveVault();
+        if (accTab != 0) { accTab = 0; }
         refreshList();
-        list.setItemChecked(accounts.size() - 1, true);
+        selectAccount(a);
         updateState();
         log("[成功] 已加入账号库：" + a.name + " (" + a.fp() + ")");
         String out = exportKeyFolder(name, key);
@@ -2009,6 +2162,10 @@ public class MainActivity extends Activity {
             toast("请先选中一个账号");
             return;
         }
+        if (a.isBackup()) {
+            toast("备份不能重命名");
+            return;
+        }
         final EditText et = new EditText(this);
         et.setInputType(InputType.TYPE_CLASS_TEXT);
         et.setText(a.name);
@@ -2036,8 +2193,8 @@ public class MainActivity extends Activity {
             return;
         }
         new AlertDialog.Builder(this)
-                .setTitle("删除账号")
-                .setMessage("确定删除「" + a.name + "」？此操作不可撤销。")
+                .setTitle(a.isBackup() ? "删除这条备份" : "删除账号")
+                .setMessage("确定删除「" + a.name + "」？" + (a.isBackup() ? "已导出的 AuthKey.txt 不会删。" : "此操作不可撤销。"))
                 .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
                     public void onClick(android.content.DialogInterface d, int w) {
                         accounts.remove(a);
@@ -2097,6 +2254,7 @@ public class MainActivity extends Activity {
                 for (File d : dirs) {
                     if (d == null || !d.isDirectory()) continue;
                     if (d.getName().startsWith("_")) continue;
+                    if (d.getName().equals("导入前备份")) continue;
                     File f = new File(d, "AuthKey.txt");
                     if (!f.isFile()) continue;
                     String k = readTextFile(f);
@@ -2372,6 +2530,7 @@ public class MainActivity extends Activity {
                         final String saved = backupCurrentKey(old, a.name);
                         if (saved == null) backupOk[0] = false;
                         final Account bak = new Account("导入前备份 " + stamp(), old);
+                        bak.kind = "backup";
                         bak.note = saved == null
                                 ? ("导入「" + a.name + "」前自动备份（文件写入失败，只存在账号库）")
                                 : ("导入「" + a.name + "」前自动备份 → " + saved);
