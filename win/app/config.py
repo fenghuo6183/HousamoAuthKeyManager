@@ -18,6 +18,11 @@ DEFAULTS = {
     "update_source": "auto",
     "reconcile_ignored": {},
     "last_update_check": 0,
+    "backup_keep": "all",
+    "import_history": {},
+    "theme": "light",
+    "capture_guard": False,
+    "app_lock": {},
 }
 
 BG_BASENAME = "background"
