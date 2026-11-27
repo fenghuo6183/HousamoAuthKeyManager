@@ -142,6 +142,9 @@ public class MainActivity extends Activity {
                     }
                 });
                 log(hasRoot ? "[root] 已获取 root 权限，可直接读写游戏私有目录。" : "[root] 未获取 root：Android 11+ 无法访问游戏数据目录，请改用 Windows 版（adb 无需 root）。");
+                String found = findGamePackages();
+                log("[游戏] 检测到的相关包名：" + (found.length() == 0 ? "无（确认游戏装在同一台手机上）" : found));
+                log("[游戏] 数据目录 " + EXT_DIR + "：" + (new File(EXT_DIR).exists() ? "存在" : "不存在或无权访问"));
             }
         });
     }
@@ -309,7 +312,8 @@ public class MainActivity extends Activity {
         StringBuilder sb = new StringBuilder();
         if (!rootChecked) sb.append("root 检测中…  ");
         else sb.append(hasRoot ? "root：已授权  " : "root：未授权  ");
-        sb.append(gameInstalled ? "游戏：已安装  " : "游戏：未检测到  ");
+        sb.append(gameInstalled ? "游戏：已检测到  " : "游戏：未检测到  ");
+        if (hasRoot) sb.append("root 已授权  ");
         sb.append("已选：").append(list.getCheckedItemPosition() >= 0 ? accounts.get(list.getCheckedItemPosition()).name : "无");
         tvState.setText(sb.toString());
     }
@@ -318,9 +322,31 @@ public class MainActivity extends Activity {
         try {
             getPackageManager().getPackageInfo(pkg, 0);
             return true;
-        } catch (Exception e) {
-            return false;
+        } catch (Exception ignored) {
         }
+        try {
+            if (new File("/sdcard/Android/data/" + pkg).exists()) return true;
+            if (new File(EXT_DIR).exists()) return true;
+            if (new File(EXT_KEY).exists()) return true;
+        } catch (Exception ignored) {
+        }
+        return false;
+    }
+
+    private String findGamePackages() {
+        StringBuilder sb = new StringBuilder();
+        try {
+            java.util.List<android.content.pm.PackageInfo> all = getPackageManager().getInstalledPackages(0);
+            for (android.content.pm.PackageInfo pi : all) {
+                String n = pi.packageName;
+                if (n != null && (n.contains("housamo") || n.contains("lifewonders"))) {
+                    if (sb.length() > 0) sb.append(", ");
+                    sb.append(n);
+                }
+            }
+        } catch (Exception ignored) {
+        }
+        return sb.toString();
     }
 
     private void askStorage() {
