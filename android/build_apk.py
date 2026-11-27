@@ -18,6 +18,8 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
+VERSION_CODE = "2"
+VERSION_NAME = "1.0.1"
 
 ENV = dict(os.environ)
 ENV["JAVA_HOME"] = JDK
@@ -59,7 +61,7 @@ def main():
     run([aapt2, "link", "-o", base, "-I", ANDROID_JAR,
          "--manifest", os.path.join(HERE, "AndroidManifest.xml"),
          "--min-sdk-version", "21", "--target-sdk-version", "34",
-         "--version-code", "1", "--version-name", "1.0.0"])
+         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME])
 
     srcs = []
     for dirpath, _, files in os.walk(os.path.join(HERE, "src")):
@@ -96,7 +98,7 @@ def main():
              "-storepass", KS_PASS, "-keypass", KS_PASS, "-noprompt",
              "-dname", "CN=Housamo AuthKey Manager, O=OpenSource, C=CN"])
 
-    out_apk = os.path.join(DIST, "%s-1.0.0.apk" % APP_NAME)
+    out_apk = os.path.join(DIST, "%s-%s.apk" % (APP_NAME, VERSION_NAME))
     run([apksigner, "sign", "--ks", KS, "--ks-key-alias", ALIAS,
          "--ks-pass", "pass:" + KS_PASS, "--key-pass", "pass:" + KS_PASS,
          "--out", out_apk, aligned])
