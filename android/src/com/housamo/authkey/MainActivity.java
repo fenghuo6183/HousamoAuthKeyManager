@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.20";
+    static final String CURRENT_VER = "1.0.21";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -3436,12 +3436,80 @@ public class MainActivity extends Activity {
                             return;
                         }
                         log("[二维码] 已识别出 key，指纹 " + hash(k).substring(0, 16));
-                        if (libraryHasKey(k)) toast("这个 key 账号库里已经有了");
-                        askNameThenSave(k, "二维码");
+                        showReceivedShare(k, "二维码");
                     }
                 });
             }
         });
+    }
+
+    private Account findAccountByKey(String key) {
+        if (key == null) return null;
+        String k = key.trim();
+        for (int i = 0; i < accounts.size(); i++) {
+            Account a = accounts.get(i);
+            if (a.key != null && a.key.trim().equals(k)) return a;
+        }
+        return null;
+    }
+
+    /** 收到分享：强提醒 + 读满 5 秒才能点确认。 */
+    private void showReceivedShare(final String key, final String source) {
+        final Account dup = findAccountByKey(key);
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "收到一份 key 分享");
+        dlgSub(c, "这是一把长期有效的登录钥匙（AuthKey），给出去就收不回。\n\n"
+                + "想让对方以后失效：在你自己的游戏里改继承码，旧 key 就作废了；"
+                + "改完你也要回任务页把 key 更新一遍，否则会把自己顶下线。");
+        TextView info = new TextView(this);
+        info.setText("来源：" + source + " · 指纹 " + hash(key).substring(0, 16)
+                + " · " + key.length() + " 字节");
+        info.setTextSize(12);
+        info.setTextColor(c("#374151"));
+        info.setPadding(0, dp(10), 0, 0);
+        c.addView(info);
+        if (dup != null) {
+            TextView w = new TextView(this);
+            w.setText("账号库里已经有这个 key：「" + dup.name + "」（" + dup.fpShort()
+                    + "），不用重复存；想改名或更新，去账号页长按那条操作。");
+            w.setTextSize(12);
+            w.setTextColor(c("#A3741A"));
+            w.setLineSpacing(dp(3), 1.0f);
+            w.setPadding(0, dp(6), 0, 0);
+            c.addView(w);
+        }
+        final AlertDialog[] h = new AlertDialog[1];
+        final Button primary = dlgPrimary("请先读上面的提醒（5 秒）", null);
+        primary.setEnabled(false);
+        primary.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                askNameThenSave(key, source);
+            }
+        });
+        c.addView(primary);
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+
+        final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+        for (int i = 4; i >= 1; i--) {
+            final int left = i;
+            ui.postDelayed(new Runnable() {
+                public void run() {
+                    primary.setText("请先读上面的提醒（" + left + " 秒）");
+                }
+            }, (5 - left) * 1000L);
+        }
+        ui.postDelayed(new Runnable() {
+            public void run() {
+                primary.setText(dup == null ? "存到账号库" : "另存为新条目");
+                primary.setEnabled(true);
+            }
+        }, 5000L);
     }
 
     private void makeQr(final Account a) {
@@ -3481,7 +3549,9 @@ public class MainActivity extends Activity {
                         log("[二维码] 已生成 " + f.getName());
                         LinearLayout c = dlgCard();
                         dlgTitle(c, a.name);
-                        dlgSub(c, "扫这个二维码就能拿到 key。发给别人等于把账号交给对方，注意场合。");
+                        dlgSub(c, "扫这个二维码就能拿到 key。\n\n"
+                                + "发给别人 = 把账号交出去：对方能一直用，你这边没法远程收回。\n"
+                                + "想让他以后失效：在你自己的游戏里改继承码，旧 key 就作废了；改完记得回这个 App 把 key 更新一遍。");
                         android.widget.ImageView iv = new android.widget.ImageView(MainActivity.this);
                         android.graphics.Bitmap bm2 = android.graphics.BitmapFactory.decodeFile(f.getAbsolutePath());
                         iv.setImageBitmap(bm2);
@@ -4476,7 +4546,7 @@ public class MainActivity extends Activity {
         TextView d = new TextView(this);
         String msg = "「" + game.label + "」现在用的指纹是 " + curFp + "，账号库里没有这个 key。";
         if (latest != null) msg += "\n库里最新的是「" + latest.name + "」（" + latest.fpShort() + "）。";
-        msg += "\n想留一份，就点「存到账号库」。";
+        msg += "\n想留一份，就点「存到账号库」；如果是同一个号换过 key（改继承码、重装过），点「更新已有账号」。";
         d.setText(msg);
         d.setTextSize(12);
         d.setTextColor(c("#7A6633"));
@@ -4500,6 +4570,17 @@ public class MainActivity extends Activity {
         lp.setMargins(dp(8), 0, 0, 0);
         row.addView(skip, lp);
         c.addView(row);
+        LinearLayout row2 = new LinearLayout(this);
+        row2.setOrientation(LinearLayout.HORIZONTAL);
+        row2.setPadding(0, dp(6), 0, 0);
+        Button upd = mkBtn("更新已有账号", false);
+        upd.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { pickAccountToUpdate(); }
+        });
+        row2.addView(upd, new LinearLayout.LayoutParams(
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,
+                android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
+        c.addView(row2);
         bannerBox.addView(c);
         bannerBox.setVisibility(android.view.View.VISIBLE);
     }
@@ -4514,6 +4595,74 @@ public class MainActivity extends Activity {
         bannerDismissedFp = curFp;
         refreshKeyCheckBanner();
         log("[快照] 已把「" + game.label + "」当前的 key 存进账号库（指纹 " + curFp + "）");
+    }
+
+    /** 选一条已有账号，把游戏里现在的 key 原地更新进去（旧 key 留备份）。 */
+    private void pickAccountToUpdate() {
+        final String k = curKey == null ? "" : curKey.trim();
+        if (k.length() < 8) {
+            toast("还没读到游戏里的 key");
+            return;
+        }
+        final java.util.List<Account> list = new ArrayList<Account>();
+        for (int i = 0; i < accounts.size(); i++) {
+            Account a = accounts.get(i);
+            if (inGame(a) && !a.isBackup()) list.add(a);
+        }
+        if (list.isEmpty()) {
+            toast("账号库里还没有账号，先点「存到账号库」");
+            return;
+        }
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "把现在这个 key 更新到哪个账号？");
+        dlgSub(c, "游戏里的 key 变了（改过继承码、重装过都算）。选中原来的账号，"
+                + "旧 key 会自动留一份备份，名字和备注都不变。");
+        final AlertDialog[] h = new AlertDialog[1];
+        for (int i = 0; i < list.size(); i++) {
+            final Account a = list.get(i);
+            String desc = a.fp() + (a.note == null || a.note.length() == 0 ? "" : " · " + a.note);
+            c.addView(dlgOption(a.name, desc, new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (h[0] != null) h[0].dismiss();
+                    replaceAccountKey(a, k);
+                }
+            }));
+        }
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
+    }
+
+    private void replaceAccountKey(Account a, String newKey) {
+        String oldKey = a.key == null ? "" : a.key.trim();
+        if (oldKey.equals(newKey.trim())) {
+            toast("库里的 key 和游戏里的一样，不用更新");
+            return;
+        }
+        if (oldKey.length() > 0 && findBackupOfKey(oldKey) == null) {
+            Account b = new Account(a.name + " 换 key 前的旧 key", oldKey);
+            b.kind = "backup";
+            b.game = a.game;
+            b.note = "旧指纹 " + a.fpShort();
+            accounts.add(b);
+        }
+        a.key = newKey.trim();
+        a.folder = "";
+        saveVault();
+        String out = exportKeyFolder(a.name, a.key);
+        if (out != null) a.folder = out;
+        if (out != null) saveVault();
+        refreshList();
+        selectAccount(a);
+        updateState();
+        bannerDismissedFp = null;
+        refreshKeyCheckBanner();
+        log("[更新] 已把「" + a.name + "」的 key 换成游戏里这个，旧 key 留在备份里"
+                + (out != null ? "，并导出到 " + out : ""));
+        toast(out != null ? "已更新并导出" : "已更新（导出失败）");
     }
 
     /** 两个游戏的分段按钮（任务页与账号页各一张）。 */
