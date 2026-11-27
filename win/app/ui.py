@@ -43,8 +43,8 @@ LOG_H = 156
 class App:
     def __init__(self, root):
         self.root = root
-        self.pal = theme.PALETTE
         self.settings = config.Settings()
+        self.pal = theme.palette(self.settings.get("theme"))
         self.active_game = game.game_by_id(self.settings.get("active_game") or "housamo")
         self.backdrop = bgfx.Backdrop(self.pal)
         self.backdrop.configure(path=self.settings.get("bg_image"),
@@ -98,11 +98,15 @@ class App:
         self._first_job = self.root.after(30, self._first_paint)
         self._init_backend()
         self._apply_update_state()
+        self._apply_capture_guard()
+        self._refresh_capture_button()
         self._auto_check = self.root.after(3000, self._auto_update_check)
         self.root.bind("<Destroy>", self._on_destroy, add="+")
 
     # -- window chrome -------------------------------------------------
     def _on_destroy(self, event=None):
+        if event is not None and event.widget is not self.root:
+            return
         self._closing = True
         job, self._first_job = self._first_job, None
         if job is not None:
@@ -136,6 +140,100 @@ class App:
         self._relayout()
         self.refresh_visuals()
 
+    # -- theme / privacy -----------------------------------------------
+    def _apply_theme(self, value=None):
+        """Switch light/dark in place: rebuild every widget from the new palette."""
+        if value is not None:
+            self.settings.set("theme", value)
+            self.settings.save()
+        self.pal = theme.palette(self.settings.get("theme"))
+        self.backdrop = bgfx.Backdrop(self.pal)
+        self.backdrop.configure(path=self.settings.get("bg_image"),
+                                blur=self.settings.get("bg_blur"),
+                                alpha=self.settings.get("bg_alpha"))
+        history = ""
+        text = getattr(self, "log_text", None)
+        if text is not None:
+            try:
+                history = text.get("1.0", "end-1c")
+            except tk.TclError:
+                history = ""
+        page = self.page
+        for child in list(self.root.winfo_children()):
+            child.destroy()
+        self.cards = []
+        self.pages = {}
+        self.nav = {}
+        self.stat_labels = {}
+        self.data_rows = {}
+        self._scroll = {}
+        self._overflow = 0
+        self.root.configure(bg=self.pal["window"])
+        self._build_styles()
+        self._build_shell()
+        self._build_task_page()
+        self._build_vault_page()
+        self._build_settings_page()
+        self._build_log()
+        self._refresh_bg_panel()
+        self._show_page(page if page in self.pages else "tasks")
+        self._last_size = (self.root.winfo_width(), self.root.winfo_height())
+        self._relayout()
+        self.refresh_visuals()
+        if history:
+            self.log_text.configure(state="normal")
+            self.log_text.insert("1.0", history)
+            self.log_text.configure(state="disabled")
+            self.log_empty.place_forget()
+        if self.vault:
+            self.refresh_vault()
+        if self.devices:
+            try:
+                self._devices_done(self.devices)
+            except Exception:
+                pass
+        self._apply_capture_guard()
+        self._refresh_capture_button()
+
+    def _on_theme_change(self, value):
+        if value == self.settings.get("theme"):
+            return
+        self._apply_theme(value)
+        self.log("设置", "主题已切到%s" % ("深色" if value == "dark" else "浅色"))
+
+    def _apply_capture_guard(self):
+        """Hide the window from screen capture (Windows 10 2004+)."""
+        if not sys.platform.startswith("win"):
+            return False
+        enabled = bool(self.settings.get("capture_guard"))
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
+            return bool(user32.SetWindowDisplayAffinity(hwnd, 0x11 if enabled else 0x0))
+        except Exception:
+            return False
+
+    def _refresh_capture_button(self):
+        button = getattr(self, "btn_capture", None)
+        if button is None:
+            return
+        on = bool(self.settings.get("capture_guard"))
+        button.set_text("已开启" if on else "开启")
+        button.configure(state="disabled" if on and not sys.platform.startswith("win") else "normal")
+
+    def toggle_capture_guard(self):
+        on = bool(self.settings.get("capture_guard"))
+        self.settings.set("capture_guard", not on)
+        self.settings.save()
+        applied = self._apply_capture_guard()
+        if applied:
+            self.log("设置", "防止截屏已%s（系统截图和录屏里这个窗口会是黑的）"
+                     % ("关闭" if on else "开启"))
+        else:
+            self.log("提示", "这台系统不支持隐藏窗口捕获")
+        self._refresh_capture_button()
+
     # -- ttk styling ---------------------------------------------------
     def _build_styles(self):
         pal = self.pal
@@ -158,7 +256,7 @@ class App:
                         foreground=pal["text_muted"], borderwidth=0, relief="flat",
                         anchor="w", font=theme.font(9, "bold"),
                         padding=(theme.px(10), theme.px(8)))
-        style.map("Treeview.Heading", background=[("active", "#EAEFF9")])
+        style.map("Treeview.Heading", background=[("active", pal["head_hover"])])
         # clam draws headings through the base Heading style; align it there too
         # so the header text lines up with the (left aligned) cell text.
         try:
@@ -170,11 +268,11 @@ class App:
                   background=[("selected", pal["accent_soft"])],
                   foreground=[("selected", pal["text"])])
         style.configure("Vertical.TScrollbar", gripcount=0, relief="flat",
-                        background="#C7D2E4", darkcolor=pal["card_soft"],
+                        background=pal["scroll_hover"], darkcolor=pal["card_soft"],
                         lightcolor=pal["card_soft"], troughcolor=pal["card_soft"],
                         bordercolor=pal["card_soft"], arrowcolor=pal["text_muted"],
                         arrowsize=theme.px(12), width=theme.px(11))
-        style.map("Vertical.TScrollbar", background=[("active", "#AEBBD2")])
+        style.map("Vertical.TScrollbar", background=[("active", pal["text_faint"])])
 
     # -- shell (wallpaper + rail) --------------------------------------
     def _build_shell(self):
@@ -479,6 +577,22 @@ class App:
         self.alpha_slider, self.alpha_readout = self._slider_block(
             body, "不透明度", "越低背景越接近纯色，文字更好读", self.alpha_value.get(), 0, 100,
             self._on_alpha_change, " %")
+
+        pref = tk.Frame(body, bg=pal["card"])
+        pref.pack(fill="x", pady=(theme.px(10), theme.px(10)))
+        label(pref, self, "主题", size=9, color="text_muted").pack(side="left")
+        self.theme_seg = Segmented(
+            self, pref, [("light", "浅色"), ("dark", "深色")],
+            active=self.settings.get("theme"), command=self._on_theme_change,
+            pad_x=theme.px(10))
+        self.theme_seg.pack(side="left", padx=(theme.px(8), theme.px(18)))
+        self.btn_capture = PillButton(self, pref, "开启", command=self.toggle_capture_guard,
+                                      kind="ghost", width=76, height=28)
+        self.btn_capture.pack(side="right")
+        label(pref, self, "防止截屏", size=9, color="text_muted").pack(
+            side="right", padx=(theme.px(0), theme.px(8)))
+        label(pref, self, "系统截图 / 录屏里这个窗口会变黑", size=9, color="text_faint").pack(
+            side="right", padx=(theme.px(14), theme.px(0)))
 
         bottom = tk.Frame(body, bg=pal["card"])
         bottom.pack(fill="x", side="bottom", pady=(theme.px(4), theme.px(0)))
@@ -1907,7 +2021,14 @@ class App:
         pal = self.pal
         name = entry.get("name") or "账号"
         raw = self.vault.key_of(entry)
-        image = qr.render(raw.decode("utf-8", "replace"))
+        try:
+            image = qr.render(raw.decode("utf-8", "replace"))
+        except Exception as exc:
+            self.log("错误", "生成二维码失败：%s" % exc)
+            messagebox.showerror(APP_TITLE,
+                                 "这个 key 太长或者不规整，画不成二维码（%s）。\n"
+                                 "可以先用「存到文件夹」导出，再换别的办法传。" % exc)
+            return
         if image is None:
             messagebox.showerror(APP_TITLE, "生成二维码失败，详见运行日志。")
             return
