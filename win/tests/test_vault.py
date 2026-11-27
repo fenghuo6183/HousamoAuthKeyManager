@@ -90,6 +90,43 @@ class VaultFilesTest(unittest.TestCase):
         self.assertTrue(created)
 
 
+class ReplaceKeyTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="vault-replace-")
+        self.v = vault.Vault(os.path.join(self.tmp, "vault.housamo.dat"), game_id="housamo")
+
+    def test_replace_keeps_entry_and_backs_up_old_key(self):
+        entry, _ = self.v.add(name="主号", key=KEY)
+        new_key = b"housamo-test-key-new-0123456789"
+        updated, backup = self.v.replace_key(entry["id"], new_key)
+        self.assertEqual(updated["id"], entry["id"])
+        self.assertEqual(updated["name"], "主号")
+        self.assertEqual(self.v.key_of(updated), new_key)
+        self.assertIsNotNone(backup)
+        self.assertEqual(backup["kind"], "backup")
+        self.assertEqual(self.v.key_of(backup), KEY)
+        self.assertEqual(self.v.find_same(KEY)["id"], backup["id"])
+        self.assertEqual(len(self.v.by_kind("account")), 1)
+
+    def test_replace_with_same_key_is_noop(self):
+        entry, _ = self.v.add(name="a", key=KEY)
+        updated, backup = self.v.replace_key(entry["id"], KEY)
+        self.assertIsNone(backup)
+        self.assertEqual(self.v.key_of(updated), KEY)
+        self.assertEqual(len(self.v.by_kind("backup")), 0)
+
+    def test_read_hak_does_not_add(self):
+        entry, _ = self.v.add(name="a", key=KEY)
+        path = os.path.join(self.tmp, "a.hak")
+        self.v.export_hak(entry["id"], path)
+        payload, key = self.v.read_hak(path)
+        self.assertEqual(key, KEY)
+        self.assertEqual(len(self.v.entries), 1)
+        again, created = self.v.add_hak_payload(payload, key)
+        self.assertEqual(again["id"], entry["id"])
+        self.assertFalse(created)
+
+
 class MigrateTest(unittest.TestCase):
     def test_migrates_legacy_vault(self):
         from app import config
