@@ -1,168 +1,712 @@
 # -*- coding: utf-8 -*-
 """Tkinter desktop client for the Housamo AuthKey manager."""
+
 from __future__ import annotations
 
-import json
 import os
 import re
+import subprocess
+import sys
 import threading
+import time
 import tkinter as tk
-from tkinter import filedialog, messagebox, simpledialog, ttk
+import webbrowser
+from tkinter import filedialog, font as tkfont, messagebox, simpledialog, ttk
 
 from . import adb as adb_mod
+from . import bgfx
+from . import config
 from . import game
+from . import reconcile
+from . import theme
+from . import updater
 from . import vault as vault_mod
+from .widgets import (MiniSlider, NavButton, PillButton, RoundCard, SectionTitle,
+                      Segmented, chip, entry, label)
 
 EMULATOR_PORTS = [7555, 16384, 5555, 62001, 62025, 21503, 5557, 5559,
                   5565, 16416, 16448, 58526, 7556, 62026]
 
-APP_TITLE = "东京放课后 AuthKey 管家"
-FONT = ("Microsoft YaHei UI", 10)
+APP_TITLE = theme.APP_NAME
+# Authored at 96 dpi; _relayout scales them through theme.px() so hi-dpi
+# monitors get a bigger window instead of a blurred bitmap stretch.
+RAIL_W = 242
+PAGE_PAD = 16
+GAP = 12
+LOG_H = 156
 
 
 class App:
     def __init__(self, root):
         self.root = root
+        self.pal = theme.PALETTE
+        self.settings = config.Settings()
+        self.active_game = game.game_by_id(self.settings.get("active_game") or "housamo")
+        self.backdrop = bgfx.Backdrop(self.pal)
+        self.backdrop.configure(path=self.settings.get("bg_image"),
+                                blur=self.settings.get("bg_blur"),
+                                alpha=self.settings.get("bg_alpha"))
+
         self.adb = None
         self.devices = []
         self.vault = None
+        self.vaults = {}
+        self.update_asset = None
+        self.update_release = None
+        self.vault_kind = "account"
         self._busy = False
-        self.save_dir = ""
-        self._load_settings()
+        self.save_dir = self.settings.get("save_dir") or ""
+        self.cards = []
+        self.pages = {}
+        self.page = "tasks"
+        self.nav = {}
+        self._resize_job = None
+        self._visual_job = None
+        self._last_size = (0, 0)
+        self._bg_photo = None
+        self._closing = False
+        self._first_job = None
+        self._scroll = {}
+        self._overflow = 0
 
         root.title(APP_TITLE)
-        root.geometry("980x720")
-        root.minsize(860, 640)
-        self._build_ui()
+        # Scale the window with the monitor, but never past the desktop.
+        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
+        win_w = min(theme.px(1100), max(theme.px(900), sw - theme.px(40)))
+        win_h = min(theme.px(800), max(theme.px(640), sh - theme.px(90)))
+        root.geometry("%dx%d+%d+%d" % (win_w, win_h,
+                                       max(0, (sw - win_w) // 2),
+                                       max(0, (sh - win_h) // 2)))
+        root.minsize(min(theme.px(1020), win_w), min(theme.px(786), win_h))
+        root.configure(bg=self.pal["window"])
+        self._apply_window_icon()
+        self._build_styles()
+        self._build_shell()
+        self._build_task_page()
+        self._build_vault_page()
+        self._build_settings_page()
+        self._build_log()
+        self._refresh_bg_panel()
+        self._show_page("tasks")
+        root.bind("<Configure>", self._on_configure)
+        root.bind_all("<MouseWheel>", self._on_wheel, add="+")
+        root.bind("<Destroy>", self._on_destroy, add="+")
+        self._first_job = self.root.after(30, self._first_paint)
         self._init_backend()
+        self._apply_update_state()
+        self.root.after(3000, lambda: self.check_update(manual=False))
 
-    # -- setup ---------------------------------------------------------
-    def _build_ui(self):
+    # -- window chrome -------------------------------------------------
+    def _on_destroy(self, event=None):
+        self._closing = True
+        job, self._first_job = self._first_job, None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+
+    def _apply_window_icon(self):
+        candidates = []
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(os.path.join(meipass, "assets", "icon.png"))
+        here = os.path.dirname(os.path.abspath(__file__))
+        candidates.append(os.path.join(here, "..", "..", "docs", "icon.png"))
+        candidates.append(os.path.join(here, "..", "assets", "icon.png"))
+        for path in candidates:
+            try:
+                if path and os.path.isfile(path):
+                    self._icon_photo = tk.PhotoImage(file=path)
+                    self.root.iconphoto(True, self._icon_photo)
+                    return
+            except Exception:
+                continue
+
+    def _first_paint(self):
+        self._first_job = None
+        if self._closing:
+            return
+        self._last_size = (self.root.winfo_width(), self.root.winfo_height())
+        self._relayout()
+        self.refresh_visuals()
+
+    # -- ttk styling ---------------------------------------------------
+    def _build_styles(self):
+        pal = self.pal
         style = ttk.Style()
         try:
-            style.theme_use("vista")
+            style.theme_use("clam")
         except tk.TclError:
             pass
-        style.configure("Treeview", font=FONT, rowheight=24)
-        style.configure("Treeview.Heading", font=("Microsoft YaHei UI", 10, "bold"))
-        style.configure("Big.TButton", font=("Microsoft YaHei UI", 11, "bold"), padding=(12, 8))
+        style.configure(".", font=theme.font(10), background=pal["card"],
+                        foreground=pal["text"], borderwidth=0,
+                        focuscolor=pal["card"])
+        style.configure("Treeview", background=pal["card"], fieldbackground=pal["card"],
+                        foreground=pal["text"], borderwidth=0, rowheight=theme.px(30),
+                        font=theme.font(10))
+        try:
+            style.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        except tk.TclError:
+            pass
+        style.configure("Treeview.Heading", background=pal["card_soft"],
+                        foreground=pal["text_muted"], borderwidth=0, relief="flat",
+                        anchor="w", font=theme.font(9, "bold"),
+                        padding=(theme.px(10), theme.px(8)))
+        style.map("Treeview.Heading", background=[("active", "#EAEFF9")])
+        # clam draws headings through the base Heading style; align it there too
+        # so the header text lines up with the (left aligned) cell text.
+        try:
+            style.configure("Heading", anchor="w", justify="left",
+                            font=theme.font(9, "bold"), padding=(theme.px(10), theme.px(8)))
+        except tk.TclError:
+            pass
+        style.map("Treeview",
+                  background=[("selected", pal["accent_soft"])],
+                  foreground=[("selected", pal["text"])])
+        style.configure("Vertical.TScrollbar", gripcount=0, relief="flat",
+                        background="#C7D2E4", darkcolor=pal["card_soft"],
+                        lightcolor=pal["card_soft"], troughcolor=pal["card_soft"],
+                        bordercolor=pal["card_soft"], arrowcolor=pal["text_muted"],
+                        arrowsize=theme.px(12), width=theme.px(11))
+        style.map("Vertical.TScrollbar", background=[("active", "#AEBBD2")])
 
-        top = ttk.Frame(self.root, padding=(12, 10, 12, 4))
-        top.pack(fill="x")
-        ttk.Label(top, text="① 选择设备", font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
-        self.adb_status = ttk.Label(top, text="正在检测 adb…", foreground="#666")
-        self.adb_status.pack(side="left", padx=(12, 0))
-        ttk.Button(top, text="刷新设备", command=self.refresh_devices).pack(side="right")
-        ttk.Button(top, text="扫描模拟器", command=self.scan_emulators).pack(side="right", padx=(0, 6))
+    # -- shell (wallpaper + rail) --------------------------------------
+    def _build_shell(self):
+        pal = self.pal
+        self.canvas = tk.Canvas(self.root, bg=pal["window"], highlightthickness=0, bd=0)
+        self.canvas.pack(fill="both", expand=True)
+        self.bg_item = self.canvas.create_image(0, 0, anchor="nw")
 
-        dev_frame = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        dev_frame.pack(fill="x")
-        cols = ("label", "state", "root", "serial")
-        self.dev_tree = ttk.Treeview(dev_frame, columns=cols, show="headings", height=4)
-        for col, title, width in (("label", "设备", 300), ("state", "状态", 90),
-                                  ("root", "Root", 70), ("serial", "序列号", 220)):
-            self.dev_tree.heading(col, text=title)
-            self.dev_tree.column(col, width=width, anchor="w")
-        self.dev_tree.pack(side="left", fill="x", expand=True)
-        sb = ttk.Scrollbar(dev_frame, orient="vertical", command=self.dev_tree.yview)
-        sb.pack(side="right", fill="y")
-        self.dev_tree.configure(yscrollcommand=sb.set)
+        self.rail = tk.Frame(self.canvas, bg=pal["rail"], bd=0, highlightthickness=0)
+        self.rail_line = tk.Frame(self.canvas, bg=pal["border"], bd=0, highlightthickness=0)
 
-        actions = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        actions.pack(fill="x")
-        self.btn_extract = ttk.Button(actions, text="提取当前账号的 key", style="Big.TButton", command=self.do_extract)
-        self.btn_extract.pack(side="left")
-        self.btn_import = ttk.Button(actions, text="将当前选择的 key 导入到游戏", style="Big.TButton", command=self.do_import)
-        self.btn_import.pack(side="left", padx=(10, 0))
-        ttk.Button(actions, text="打开游戏", command=self.launch_game).pack(side="left", padx=(10, 0))
+        brand = tk.Frame(self.rail, bg=pal["rail"])
+        brand.pack(fill="x", padx=theme.px(16), pady=(theme.px(22), theme.px(18)))
+        self._brand_icon(brand)
+        text_box = tk.Frame(brand, bg=pal["rail"])
+        text_box.pack(side="left", padx=(theme.px(12), theme.px(0)))
+        label(text_box, self, theme.APP_NAME, size=10, weight="bold", bg="rail").pack(anchor="w")
+        label(text_box, self, theme.APP_SUBTITLE, size=8, color="text_muted",
+              bg="rail").pack(anchor="w", pady=(theme.px(1), theme.px(0)))
 
-        save_row = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        save_row.pack(fill="x")
-        ttk.Label(save_row, text="保存文件夹：").pack(side="left")
-        self.save_dir_var = tk.StringVar(value=self.save_dir or "未选择（点右侧「选择文件夹」）")
-        ttk.Entry(save_row, textvariable=self.save_dir_var, state="readonly", width=64).pack(side="left", fill="x", expand=True)
-        ttk.Button(save_row, text="选择文件夹", command=self.choose_save_dir).pack(side="left", padx=(6, 0))
-        ttk.Button(save_row, text="打开", command=self.open_save_dir).pack(side="left", padx=(6, 0))
+        nav = tk.Frame(self.rail, bg=pal["rail"])
+        nav.pack(fill="x", padx=theme.px(14))
+        for key, text, glyph in (("tasks", "任务", "▣"),
+                                 ("vault", "账号库", "☰"),
+                                 ("settings", "设置", "⚙")):
+            button = NavButton(self, nav, text, glyph, command=lambda k=key: self._show_page(k))
+            button.pack(fill="x", pady=theme.px(3))
+            self.nav[key] = button
 
-        ttk.Separator(self.root).pack(fill="x", padx=12, pady=(2, 6))
+        footer = tk.Frame(self.rail, bg=pal["rail"])
+        footer.pack(side="bottom", fill="x", padx=theme.px(18), pady=theme.px(16))
+        label(footer, self, "v" + theme.APP_VERSION, size=9, color="text_faint",
+              bg="rail").pack(anchor="w")
+        repo = tk.Label(footer, text="项目主页  ↗", font=theme.font(9),
+                        fg=pal["accent"], bg=pal["rail"], bd=0, cursor="hand2")
+        repo.pack(anchor="w", pady=(theme.px(2), theme.px(0)))
+        repo.bind("<Button-1>", lambda e: self.open_repo())
 
-        head = ttk.Frame(self.root, padding=(12, 0, 12, 2))
+    def _brand_icon(self, parent):
+        pal = self.pal
+        size = theme.px(42)
+        box = tk.Canvas(parent, width=size, height=size, bg=pal["rail"],
+                        highlightthickness=0, bd=0)
+        box.pack(side="left")
+        photo = None
+        if bgfx.PIL_OK:
+            try:
+                from PIL import ImageTk
+                photo = ImageTk.PhotoImage(bgfx.rounded_rgba(
+                    size, size, theme.px(13), theme.hex_to_rgb(pal["accent"]) + (255,), scale=3))
+            except Exception:
+                photo = None
+        if photo is not None:
+            box.create_image(0, 0, anchor="nw", image=photo)
+            box.image = photo
+        else:
+            box.configure(bg=pal["accent"])
+        box.create_text(size // 2, size // 2 - 1, text="东", font=theme.font(15, "bold"),
+                        fill=pal["on_accent"])
+        return box
+
+    # -- page: tasks ---------------------------------------------------
+    def _build_task_page(self):
+        pal = self.pal
+
+        device_card = RoundCard(self)
+        body = device_card.body
+        head = SectionTitle.build(self, body, "① 选择设备", "USB 连接手机，或先启动模拟器")
         head.pack(fill="x")
-        ttk.Label(head, text="② 账号库", font=("Microsoft YaHei UI", 11, "bold")).pack(side="left")
-        self.count_label = ttk.Label(head, text="", foreground="#666")
-        self.count_label.pack(side="left", padx=(12, 0))
+        right = tk.Frame(head, bg=pal["card"])
+        right.pack(side="right", padx=(theme.px(14), theme.px(0)))
+        self.game_seg = Segmented(self, right, [(g.id, g.label) for g in game.GAMES],
+                                  active=self.active_game.id, command=self.switch_game)
+        self.game_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
+        self.adb_chip = chip(right, self, "正在检测 adb…", tone="muted")
+        self.adb_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
+        PillButton(self, right, "扫描模拟器", command=self.scan_emulators, kind="ghost",
+                   width=104, height=32).pack(side="left", padx=(theme.px(0), theme.px(8)))
+        PillButton(self, right, "刷新设备", command=self.refresh_devices, kind="ghost",
+                   width=92, height=32).pack(side="left")
 
-        vault_frame = ttk.Frame(self.root, padding=(12, 0, 12, 6))
-        vault_frame.pack(fill="both", expand=True)
+        self.reconcile_bar = tk.Frame(body, bg=pal["warn_soft"])
+        inner = tk.Frame(self.reconcile_bar, bg=pal["warn_soft"])
+        inner.pack(fill="x", padx=theme.px(14), pady=theme.px(10))
+        self.reconcile_text = label(inner, self, "", size=9, color="warn", bg="warn_soft")
+        self.reconcile_text.pack(side="left")
+        PillButton(self, inner, "不用管", command=self.dismiss_reconcile, kind="ghost",
+                   width=72, height=28, bg="warn_soft").pack(side="right")
+        PillButton(self, inner, "存到账号库", command=self.save_reconcile_entry, kind="primary",
+                   width=104, height=28).pack(side="right", padx=(theme.px(0), theme.px(8)))
+
+        tree_box = tk.Frame(body, bg=pal["card"])
+        self.tree_box = tree_box
+        tree_box.pack(fill="both", expand=True, pady=(theme.px(12), theme.px(0)))
+        cols = ("label", "state", "root", "serial")
+        self.dev_tree = ttk.Treeview(tree_box, columns=cols, show="headings", height=4,
+                                     selectmode="browse")
+        widths = (("label", "设备", 300), ("state", "状态", 90),
+                  ("root", "Root", 70), ("serial", "序列号", 220))
+        for col, title, width in widths:
+            self.dev_tree.heading(col, text=title, anchor="w")
+            self.dev_tree.column(col, width=theme.px(width), anchor="w", stretch=(col == "label"))
+        self.dev_tree.pack(side="left", fill="both", expand=True)
+        sb = ttk.Scrollbar(tree_box, orient="vertical", command=self.dev_tree.yview)
+        sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
+        self.dev_sb = sb
+        self.dev_tree.configure(yscrollcommand=sb.set)
+        self.dev_tree.tag_configure("odd", background=pal["card_sunken"])
+        self.device_hint = label(body, self, "正在检测设备…", size=9, color="text_muted")
+        self.device_hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
+
+        self.device_empty = tk.Frame(tree_box, bg=pal["card"])
+        label(self.device_empty, self, "还没有发现设备", size=13, weight="bold").pack(pady=(theme.px(0), theme.px(6)))
+        label(self.device_empty, self, "USB 接上手机并在弹窗里允许调试，或先启动模拟器再点「扫描模拟器」",
+              size=9, color="text_muted").pack()
+
+        action_card = RoundCard(self)
+        body = action_card.body
+        SectionTitle.build(self, body, "② 提取与导入", "提取会把 key 存进账号库并导出到保存文件夹").pack(fill="x")
+        row = tk.Frame(body, bg=pal["card"])
+        row.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        self.btn_extract = PillButton(self, row, "提取 %s 的 key" % self.active_game.label,
+                                      command=self.do_extract,
+                                      kind="primary", width=196, height=44)
+        self.btn_extract.pack(side="left")
+        self.btn_import = PillButton(self, row, "导入到 %s" % self.active_game.label,
+                                     command=self.do_import,
+                                     kind="soft", width=180, height=44)
+        self.btn_import.pack(side="left", padx=(theme.px(10), theme.px(0)))
+        PillButton(self, row, "打开游戏", command=self.launch_game, kind="ghost",
+                   width=104, height=44).pack(side="left", padx=(theme.px(10), theme.px(0)))
+
+        save_row = tk.Frame(body, bg=pal["card"])
+        save_row.pack(fill="x", pady=(theme.px(14), theme.px(0)))
+        label(save_row, self, "保存文件夹", size=9, color="text_muted").pack(side="left")
+        self.save_dir_var = tk.StringVar(value=self.save_dir or "未选择（提取后会自动导出到该文件夹）")
+        self.save_entry = entry(save_row, self, self.save_dir_var, width=40)
+        self.save_entry.configure(state="readonly", readonlybackground=pal["card_soft"])
+        self.save_entry.pack(side="left", fill="x", expand=True, padx=(theme.px(10), theme.px(10)), ipady=theme.px(5))
+        PillButton(self, save_row, "选择文件夹", command=self.choose_save_dir, kind="ghost",
+                   width=98, height=32).pack(side="left", padx=(theme.px(0), theme.px(8)))
+        PillButton(self, save_row, "打开", command=self.open_save_dir, kind="ghost",
+                   width=62, height=32).pack(side="left")
+
+        hint = label(body, self, "① 选设备 → ② 提取 key → ③ 换号时选中账号导入（导入前自动备份当前 key）",
+                     size=9, color="text_faint")
+        hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
+
+        self.pages["tasks"] = [(device_card, None),
+                               (action_card, max(theme.px(208), action_card.required_height()))]
+
+    # -- page: vault ---------------------------------------------------
+    def _build_vault_page(self):
+        pal = self.pal
+        card = RoundCard(self)
+        body = card.body
+        head = SectionTitle.build(self, body, "账号库", "选中后可以导入、复制或导出")
+        head.pack(fill="x")
+        right = tk.Frame(head, bg=pal["card"])
+        right.pack(side="right", padx=(theme.px(14), theme.px(0)))
+        self.kind_seg = Segmented(self, right, [("account", "账号"), ("backup", "备份")],
+                                  active=self.vault_kind, command=self.switch_vault_kind)
+        self.kind_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
+        self.count_chip = chip(right, self, "0 个账号", tone="muted")
+        self.count_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
+        label(right, self, "搜索", size=9, color="text_muted").pack(side="left")
+        self.search_var = tk.StringVar()
+        self.search_var.trace_add("write", lambda *a: self.refresh_vault())
+        search = entry(right, self, self.search_var, width=22)
+        search.pack(side="left", padx=(theme.px(8), theme.px(0)), ipady=theme.px(4))
+
+        tree_box = tk.Frame(body, bg=pal["card"])
+        tree_box.pack(fill="both", expand=True, pady=(theme.px(12), theme.px(0)))
         vcols = ("name", "note", "fingerprint", "source", "created")
-        self.vault_tree = ttk.Treeview(vault_frame, columns=vcols, show="headings", height=8)
-        for col, title, width in (("name", "名称", 190), ("note", "备注", 180),
-                                  ("fingerprint", "Key 指纹", 170), ("source", "来源", 200),
-                                  ("created", "添加时间", 150)):
-            self.vault_tree.heading(col, text=title)
-            self.vault_tree.column(col, width=width, anchor="w")
+        self.vault_tree = ttk.Treeview(tree_box, columns=vcols, show="headings", height=8)
+        titles = (("name", "名称", 140), ("note", "备注", 100), ("fingerprint", "Key 指纹", 138),
+                  ("source", "来源", 170), ("created", "添加时间", 132))
+        for col, title, width in titles:
+            self.vault_tree.heading(col, text=title, anchor="w")
+            self.vault_tree.column(col, width=theme.px(width), anchor="w", stretch=(col == "source"))
         self.vault_tree.pack(side="left", fill="both", expand=True)
-        vsb = ttk.Scrollbar(vault_frame, orient="vertical", command=self.vault_tree.yview)
-        vsb.pack(side="right", fill="y")
+        vsb = ttk.Scrollbar(tree_box, orient="vertical", command=self.vault_tree.yview)
+        vsb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
         self.vault_tree.configure(yscrollcommand=vsb.set)
+        self.vault_tree.tag_configure("odd", background=pal["card_sunken"])
         self.vault_tree.bind("<Double-1>", lambda e: self.show_key())
+        self.vault_tree.bind("<<TreeviewSelect>>", lambda e: self._update_vault_actions())
 
-        row = ttk.Frame(self.root, padding=(12, 0, 12, 8))
-        row.pack(fill="x")
-        for text, cmd in (("重命名", self.rename_entry), ("编辑备注", self.edit_note),
-                          ("复制 Key", self.copy_key), ("显示 Key", self.show_key),
-                          ("把选中的 key 再存一份到文件夹", self.export_selected_to_dir),
-                          ("导出 .hak", self.export_hak), ("导入 .hak", self.import_hak),
-                          ("删除", self.delete_entry)):
-            ttk.Button(row, text=text, command=cmd).pack(side="left", padx=(0, 6))
+        divider = tk.Frame(body, bg=pal["border_soft"], height=theme.px(1))
+        divider.pack(fill="x", pady=(theme.px(14), theme.px(12)))
 
-        log_frame = ttk.LabelFrame(self.root, text="运行日志", padding=6)
-        log_frame.pack(fill="both", expand=False, padx=12, pady=(0, 12))
-        self.log_text = tk.Text(log_frame, height=9, font=("Consolas", 9), wrap="word",
-                                bg="#1e1e1e", fg="#d6d6d6", insertbackground="#d6d6d6")
+        toolbar = tk.Frame(body, bg=pal["card"])
+        toolbar.pack(fill="x")
+        self.btn_rename = PillButton(self, toolbar, "重命名", command=self.rename_entry,
+                                       kind="ghost", width=84, height=34)
+        self.btn_rename.pack(side="left", padx=(theme.px(0), theme.px(6)))
+        self.btn_note = PillButton(self, toolbar, "编辑备注", command=self.edit_note,
+                                   kind="ghost", width=84, height=34)
+        self.btn_note.pack(side="left", padx=(theme.px(0), theme.px(6)))
+        actions = (("复制 Key", self.copy_key, "ghost"),
+                   ("显示 Key", self.show_key, "ghost"),
+                   ("存到文件夹", self.export_selected_to_dir, "ghost"),
+                   ("导出 .hak", self.export_hak, "ghost"),
+                   ("导入 .hak", self.import_hak, "ghost"))
+        for text, command, kind in actions:
+            PillButton(self, toolbar, text, command=command, kind=kind,
+                       width=84, height=34).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        PillButton(self, toolbar, "删除", command=self.delete_entry, kind="danger",
+                   width=72, height=34).pack(side="right")
+
+        self.pages["vault"] = [(card, None)]
+
+    # -- page: settings ------------------------------------------------
+    def _build_settings_page(self):
+        pal = self.pal
+        card = RoundCard(self)
+        body = card.body
+        SectionTitle.build(self, body, "外观 · 背景图",
+                           "上传一张图片做窗口背景，模糊和不透明度可以实时调").pack(fill="x")
+
+        row = tk.Frame(body, bg=pal["card"])
+        row.pack(fill="x", pady=(theme.px(14), theme.px(0)))
+        self.thumb_holder = tk.Frame(row, bg=pal["card_soft"], width=theme.px(132),
+                                     height=theme.px(74),
+                                     highlightthickness=1, highlightbackground=pal["border"])
+        self.thumb_holder.pack(side="left")
+        self.thumb_holder.pack_propagate(False)
+        self.thumb_label = tk.Label(self.thumb_holder, bg=pal["card_soft"], bd=0,
+                                    fg=pal["text_faint"], font=theme.font(9),
+                                    text="无背景图")
+        self.thumb_label.pack(fill="both", expand=True)
+
+        info = tk.Frame(row, bg=pal["card"])
+        info.pack(side="left", fill="x", expand=True, padx=(theme.px(18), theme.px(0)))
+        self.bg_name_label = label(info, self, "还没有选择背景图", size=10, weight="bold")
+        self.bg_name_label.pack(anchor="w")
+        self.bg_note_label = label(info, self, "支持 png / jpg / bmp / webp，选择后会复制一份到应用数据目录",
+                                   size=9, color="text_muted")
+        self.bg_note_label.pack(anchor="w", pady=(theme.px(4), theme.px(0)))
+        btn_row = tk.Frame(info, bg=pal["card"])
+        btn_row.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
+        PillButton(self, btn_row, "选择图片", command=self.choose_background, kind="primary",
+                   width=112, height=36).pack(side="left")
+        PillButton(self, btn_row, "清除", command=self.clear_background, kind="ghost",
+                   width=78, height=36).pack(side="left", padx=(theme.px(8), theme.px(0)))
+
+        self.blur_value = tk.IntVar(value=int(self.settings.get("bg_blur")))
+        self.blur_slider, self.blur_readout = self._slider_block(
+            body, "模糊", "数值越大背景越虚化", self.blur_value.get(), 0, 60,
+            self._on_blur_change, " px")
+
+        self.alpha_value = tk.IntVar(value=int(self.settings.get("bg_alpha")))
+        self.alpha_slider, self.alpha_readout = self._slider_block(
+            body, "不透明度", "越低背景越接近纯色，文字更好读", self.alpha_value.get(), 0, 100,
+            self._on_alpha_change, " %")
+
+        bottom = tk.Frame(body, bg=pal["card"])
+        bottom.pack(fill="x", side="bottom", pady=(theme.px(4), theme.px(0)))
+        PillButton(self, bottom, "恢复默认外观", command=self.reset_appearance, kind="ghost",
+                   width=132, height=32).pack(side="left")
+        label(bottom, self, "背景图会复制一份到应用数据目录，移动原图不影响显示",
+              size=9, color="text_faint").pack(side="left", padx=(theme.px(12), theme.px(0)))
+
+        update_card = RoundCard(self)
+        ub = update_card.body
+        SectionTitle.build(self, ub, "更新", "检查到新版本会自己下载，重启后生效").pack(fill="x")
+        row = tk.Frame(ub, bg=pal["card"])
+        row.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        self.update_version_label = label(row, self, "当前版本 v" + theme.APP_VERSION,
+                                          size=10, weight="bold")
+        self.update_version_label.pack(side="left")
+        label(row, self, "更新源", size=9, color="text_muted").pack(
+            side="left", padx=(theme.px(18), theme.px(6)))
+        self.update_source_seg = Segmented(
+            self, row, [("auto", "自动"), ("github", "GitHub"), ("mirror", "镜像")],
+            active=self.settings.get("update_source"), command=self._on_update_source,
+            pad_x=theme.px(10))
+        self.update_source_seg.pack(side="left")
+        self.btn_check_update = PillButton(self, row, "检查更新",
+                                           command=lambda: self.check_update(True),
+                                           kind="ghost", width=104, height=32)
+        self.btn_check_update.pack(side="right")
+
+        status_row = tk.Frame(ub, bg=pal["card"])
+        status_row.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        self.update_status = label(status_row, self, "启动时会自动检查一次", size=9,
+                                   color="text_muted")
+        self.update_status.pack(side="left")
+        self.btn_view_log = PillButton(self, status_row, "查看日志", command=self.open_update_log,
+                                       kind="ghost", width=88, height=30)
+        self.btn_view_log.pack_forget()
+        self.btn_install_update = PillButton(self, status_row, "立即更新",
+                                             command=self.do_update, kind="primary",
+                                             width=104, height=30)
+        self.btn_install_update.pack_forget()
+
+        data_card = RoundCard(self)
+        db = data_card.body
+        SectionTitle.build(self, db, "数据与存储", "全部读写都在本机完成，不上传任何数据").pack(fill="x")
+        self.data_rows = {}
+        for key, title in (("data_dir", "应用数据目录"), ("vault", "当前游戏库"),
+                           ("save_dir", "保存位置"), ("adb", "adb 组件")):
+            line = tk.Frame(db, bg=pal["card"])
+            line.pack(fill="x", pady=(theme.px(7), theme.px(0)))
+            label(line, self, title, size=9, color="text_muted", width=10,
+                  anchor="w").pack(side="left")
+            value = label(line, self, "-", size=9, color="text")
+            value.pack(side="left", padx=(theme.px(6), theme.px(0)))
+            self.data_rows[key] = value
+        data_actions = tk.Frame(db, bg=pal["card"])
+        data_actions.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        PillButton(self, data_actions, "打开数据目录", command=self.open_data_dir, kind="ghost",
+                   width=118, height=32).pack(side="left")
+        PillButton(self, data_actions, "复制路径", command=self.copy_data_dir, kind="ghost",
+                   width=88, height=32).pack(side="left", padx=(theme.px(8), theme.px(0)))
+
+        self.pages["settings"] = [(card, max(theme.px(356), card.required_height())),
+                                  (update_card,
+                                   max(theme.px(150), update_card.required_height())),
+                                  (data_card, None)]
+
+    def _slider_block(self, parent, title, hint, value, from_, to, callback, unit):
+        pal = self.pal
+        block = tk.Frame(parent, bg=pal["card"])
+        block.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        top = tk.Frame(block, bg=pal["card"])
+        top.pack(fill="x")
+        label(top, self, title, size=10, weight="bold").pack(side="left")
+        label(top, self, hint, size=9, color="text_muted").pack(side="left", padx=(theme.px(10), theme.px(0)))
+        readout = label(top, self, "%d%s" % (int(value), unit), size=10, weight="bold",
+                        color="accent")
+        readout.pack(side="right")
+        slider = MiniSlider(self, block, value=value, from_=from_, to=to,
+                            on_change=callback, width=300, height=26)
+        slider.pack(fill="x", pady=(theme.px(8), theme.px(0)))
+        return slider, readout
+
+    # -- page: log -----------------------------------------------------
+    def _build_log(self):
+        pal = self.pal
+        card = RoundCard(self, fill="log_bg")
+        body = card.body
+        head = tk.Frame(body, bg=pal["log_bg"])
+        head.pack(fill="x")
+        label(head, self, "运行日志", size=11, weight="bold", color="log_fg",
+              bg="log_bg").pack(side="left")
+        label(head, self, "出问题先看这里", size=9, color="log_dim",
+              bg="log_bg").pack(side="left", padx=(theme.px(10), theme.px(0)))
+        PillButton(self, head, "清空", command=self.clear_log, kind="ghost",
+                   width=66, height=28, bg="log_bg").pack(side="right")
+
+        box = tk.Frame(body, bg=pal["log_bg"])
+        box.pack(fill="both", expand=True, pady=(theme.px(10), theme.px(0)))
+        self.log_text = tk.Text(box, height=6, wrap="word", bd=0, highlightthickness=0,
+                                font=theme.mono(9), bg=pal["log_bg"], fg=pal["log_fg"],
+                                insertbackground=pal["log_fg"], padx=theme.px(2), pady=theme.px(2))
         self.log_text.pack(side="left", fill="both", expand=True)
-        lsb = ttk.Scrollbar(log_frame, orient="vertical", command=self.log_text.yview)
-        lsb.pack(side="right", fill="y")
-        self.log_text.configure(yscrollcommand=lsb.set)
+        # 深色卡片上系统滚动条是浅色的一整条，很扎眼；改为纯滚轮滚动
+        self.log_text.configure(state="disabled")
+        self.log_empty = tk.Label(box, text="操作记录会显示在这里，出问题时先看这里", bd=0,
+                                  bg=pal["log_bg"], fg=pal["log_dim"], font=theme.font(9))
+        self.log_empty.place(relx=0.5, rely=0.45, anchor="center")
+        self.log_text.tag_configure("time", foreground=pal["log_dim"])
+        self.log_text.tag_configure("ok", foreground=pal["log_ok"])
+        self.log_text.tag_configure("err", foreground=pal["log_err"])
+        self.log_text.tag_configure("hint", foreground=pal["log_hint"])
+        self.log_card = card
 
+    # -- layout --------------------------------------------------------
+    def _relayout(self):
+        width = self.canvas.winfo_width()
+        height = self.canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        rail_w = theme.px(RAIL_W)
+        page_pad = theme.px(PAGE_PAD)
+        gap = theme.px(GAP)
+        specs = self.pages.get(self.page, ())
+        fixed = sum(h for _, h in specs if h)
+        fills = [card for card, h in specs if not h]
+        need = 0
+        for card in fills:
+            card.body.update_idletasks()
+            need += card.body.winfo_reqheight() + 2 * (card.margin + card.pad)
+        wanted = fixed + need + gap * max(0, len(specs) - 1)
+        log_h = theme.px(LOG_H)
+        # A window squashed below the authored minimum starves the page: first
+        # give the log panel the space back, then drop it, then scroll.
+        top_area = height - 2 * page_pad - gap - log_h
+        log_visible = True
+        if top_area < wanted:
+            log_h = max(theme.px(96), log_h - (wanted - top_area))
+            top_area = height - 2 * page_pad - gap - log_h
+        if top_area < wanted:
+            log_visible = False
+            log_h = 0
+            top_area = height - 2 * page_pad
+        overflow = max(0, wanted - top_area)
+        offset = self._scroll.get(self.page, 0)
+        offset = max(0, min(offset, overflow))
+        self._scroll[self.page] = offset
+        self._overflow = overflow
+        log_y = height - page_pad - log_h
+        if not log_visible:
+            self.log_card.place_forget()
+
+        self.rail.place(x=0, y=0, width=rail_w, relheight=1)
+        self.rail_line.place(x=rail_w - 1, y=0, width=theme.px(1), relheight=1)
+        x0 = rail_w + page_pad
+        content_w = max(theme.px(360), width - rail_w - 2 * page_pad)
+        if log_visible:
+            self.log_card.layout(x0, log_y, content_w, log_h)
+
+        for key, page_specs in self.pages.items():
+            if key != self.page:
+                for card, _ in page_specs:
+                    card.place_forget()
+                continue
+            spare = top_area - fixed - gap * max(0, len(page_specs) - 1)
+            fill_count = len(fills) or 1
+            if fills:
+                # When everything fits, fills share the slack; when the page is
+                # taller than the window, give each fill its natural height and
+                # let the page scroll instead of squashing them.
+                fill_h = max(int(spare / fill_count), int(need / fill_count))
+            else:
+                fill_h = 0
+            y = page_pad - offset
+            for card, h in page_specs:
+                card_h = h or fill_h
+                card.layout(x0, y, content_w, card_h)
+                y += card_h + gap
+
+    def refresh_visuals(self):
+        width = self.canvas.winfo_width()
+        height = self.canvas.winfo_height()
+        if width <= 1 or height <= 1:
+            return
+        if bgfx.PIL_OK:
+            try:
+                self._bg_photo = bgfx.ImageTk.PhotoImage(self.backdrop.full(width, height))
+                self.canvas.itemconfigure(self.bg_item, image=self._bg_photo)
+            except Exception:
+                pass
+        else:
+            self.canvas.configure(bg=self.pal["window"])
+        for card in self.cards:
+            if card is self.log_card or card.winfo_manager():
+                card.render()
+
+    def _on_wheel(self, event):
+        """Scroll the page only when it is taller than the window."""
+        if self._overflow <= 0:
+            return None
+        widget = event.widget
+        if widget is self.log_text or getattr(widget, "winfo_class", lambda: "")() == "Text":
+            return None
+        step = max(1, int(theme.px(56)))
+        delta = -1 if getattr(event, "delta", 0) > 0 else 1
+        offset = self._scroll.get(self.page, 0) + delta * step
+        self._scroll[self.page] = max(0, min(offset, self._overflow))
+        self._relayout()
+        return "break"
+
+    def _on_configure(self, event):
+        if event.widget is not self.root:
+            return
+        size = (event.width, event.height)
+        if size == self._last_size:
+            return
+        self._last_size = size
+        if self._resize_job:
+            try:
+                self.root.after_cancel(self._resize_job)
+            except Exception:
+                pass
+        self._resize_job = self.root.after(60, self._apply_layout)
+
+    def _apply_layout(self):
+        self._resize_job = None
+        self._relayout()
+        self.refresh_visuals()
+
+    def _show_page(self, key):
+        self.page = key
+        self._scroll[key] = 0
+        for name, button in self.nav.items():
+            button.set_active(name == key)
+        if key == "settings":
+            self._refresh_data_card()
+        self._relayout()
+        self.refresh_visuals()
+
+    def open_repo(self):
+        try:
+            webbrowser.open(theme.REPO_URL)
+        except Exception as exc:
+            self.log("提示", "打开仓库失败：%s" % exc)
+
+    # -- backend bootstrap --------------------------------------------
     def _init_backend(self):
-        try:
-            self.adb = adb_mod.Adb()
-            self.adb.ensure_server()
-            self.adb_status.configure(text="adb: " + (self.adb.version or self.adb.path), foreground="#2e7d32")
-        except Exception as exc:
+        if os.environ.get("HOUSAMO_NO_ADB") == "1":
             self.adb = None
-            self.adb_status.configure(text="adb 不可用", foreground="#c62828")
-            self.log("错误", str(exc))
-        try:
-            self.vault = vault_mod.Vault()
-            self.refresh_vault()
-        except Exception as exc:
-            self.log("错误", "账号库加载失败：%s" % exc)
+            self._set_adb_chip("测试模式", "muted")
+        else:
+            try:
+                self.adb = adb_mod.Adb()
+                self.adb.ensure_server()
+                self._set_adb_chip("adb 就绪", "ok")
+            except Exception as exc:
+                self.adb = None
+                self._set_adb_chip("adb 不可用", "err")
+                self.log("错误", str(exc))
+        vault_mod.migrate_legacy_vault()
+        for g in game.GAMES:
+            try:
+                self.vaults[g.id] = vault_mod.Vault(game_id=g.id)
+            except Exception as exc:
+                self.log("错误", "账号库加载失败（%s）：%s" % (g.label, exc))
+        self.vault = self.vaults.get(self.active_game.id)
+        self.refresh_vault()
         if self.adb:
             self.refresh_devices()
 
-    # -- settings / folder export --------------------------------------
-    def _settings_path(self):
-        base = os.environ.get("APPDATA") or os.path.expanduser("~")
-        folder = os.path.join(base, "HousamoAuthKeyManager")
-        os.makedirs(folder, exist_ok=True)
-        return os.path.join(folder, "settings.json")
-
-    def _load_settings(self):
+    def _set_adb_chip(self, text, tone):
+        tones = {"ok": ("ok_soft", "ok"), "err": ("err_soft", "err"),
+                 "muted": ("card_soft", "text_muted"), "warn": ("warn_soft", "warn")}
+        bg, fg = tones.get(tone, tones["muted"])
         try:
-            with open(self._settings_path(), "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            self.save_dir = data.get("save_dir", "") or ""
+            self.adb_chip.configure(text=text, bg=self.pal[bg], fg=self.pal[fg])
         except Exception:
-            self.save_dir = ""
+            pass
 
+    # -- settings / folder export --------------------------------------
     def _save_settings(self):
-        try:
-            with open(self._settings_path(), "w", encoding="utf-8") as fh:
-                json.dump({"save_dir": self.save_dir}, fh, ensure_ascii=False, indent=1)
-        except Exception as exc:
-            self.log("设置", "保存设置失败：%s" % exc)
+        self.settings.set("save_dir", self.save_dir)
+        self.settings.save()
 
     def choose_save_dir(self):
         path = filedialog.askdirectory(parent=self.root, title="选择 key 保存到的文件夹")
@@ -189,10 +733,11 @@ class App:
         return text[:40]
 
     def export_to_dir(self, name, key):
-        """Write <保存文件夹>/<名字>/AuthKey.txt; returns path or None."""
+        """Write <保存文件夹>/<游戏>/<名字>/AuthKey.txt; returns path or None."""
         if not self.save_dir:
             return None
-        folder = os.path.join(self.save_dir, self._safe_name(name))
+        folder = os.path.join(self.save_dir, self._safe_name(self.active_game.label),
+                              self._safe_name(name))
         try:
             os.makedirs(folder, exist_ok=True)
             target = os.path.join(folder, "AuthKey.txt")
@@ -203,14 +748,329 @@ class App:
             self.log("导出", "写入失败：%s" % exc)
             return None
 
+    # -- background image settings -------------------------------------
+    def choose_background(self):
+        path = filedialog.askopenfilename(
+            parent=self.root, title="选择背景图片",
+            filetypes=[("图片", "*.png *.jpg *.jpeg *.bmp *.webp *.gif"),
+                       ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            stored = config.store_background(path)
+        except Exception as exc:
+            messagebox.showerror(APP_TITLE, "无法使用这张图片：%s" % exc)
+            return
+        self.settings.set("bg_image", stored)
+        self.backdrop.configure(path=stored)
+        self._refresh_bg_panel()
+        self.refresh_visuals()
+        self.log("设置", "背景图已更新：%s" % os.path.basename(path))
+
+    def clear_background(self):
+        if not self.settings.get("bg_image"):
+            return
+        config.clear_background()
+        self.settings.set("bg_image", "")
+        self.backdrop.configure(path="")
+        self._refresh_bg_panel()
+        self.refresh_visuals()
+        self.log("设置", "已清除背景图")
+
+    def _on_blur_change(self, value):
+        value = int(round(value))
+        self.blur_value.set(value)
+        self.blur_readout.configure(text="%d px" % value)
+        self.settings.set("bg_blur", value, save=False)
+        self.backdrop.configure(blur=value)
+        self._schedule_visual_refresh()
+
+    def _on_alpha_change(self, value):
+        value = int(round(value))
+        self.alpha_value.set(value)
+        self.alpha_readout.configure(text="%d %%" % value)
+        self.settings.set("bg_alpha", value, save=False)
+        self.backdrop.configure(alpha=value)
+        self._schedule_visual_refresh()
+
+    def _schedule_visual_refresh(self):
+        if self._visual_job:
+            try:
+                self.root.after_cancel(self._visual_job)
+            except Exception:
+                pass
+        self._visual_job = self.root.after(70, self._flush_visual)
+
+    def _flush_visual(self):
+        self._visual_job = None
+        self.refresh_visuals()
+        self.settings.save()
+
+    def reset_appearance(self):
+        self.settings.set("bg_blur", config.DEFAULTS["bg_blur"], save=False)
+        self.settings.set("bg_alpha", config.DEFAULTS["bg_alpha"], save=False)
+        self.backdrop.configure(blur=config.DEFAULTS["bg_blur"],
+                               alpha=config.DEFAULTS["bg_alpha"])
+        self.blur_slider.set(config.DEFAULTS["bg_blur"])
+        self.alpha_slider.set(config.DEFAULTS["bg_alpha"])
+        self.blur_readout.configure(text="%d px" % config.DEFAULTS["bg_blur"])
+        self.alpha_readout.configure(text="%d %%" % config.DEFAULTS["bg_alpha"])
+        self.settings.save()
+        self.refresh_visuals()
+        self.log("设置", "外观已恢复默认")
+
+    # -- updater -------------------------------------------------------
+    def _on_update_source(self, value):
+        self.settings.set("update_source", value)
+        self.update_source_seg.set_active(value)
+        self.log("更新", "更新源：%s"
+                 % {"auto": "自动", "github": "GitHub", "mirror": "镜像"}.get(value, value))
+
+    def check_update(self, manual=False):
+        self.update_asset = None
+        self.update_release = None
+        try:
+            self.btn_install_update.pack_forget()
+            self.btn_view_log.pack_forget()
+            self.btn_check_update.set_enabled(False)
+            self.update_status.configure(text="正在检查…", fg=self.pal["text_muted"])
+        except Exception:
+            pass
+
+        def worker():
+            try:
+                return updater.fetch_latest()
+            except Exception as exc:
+                return exc
+
+        def done(result):
+            try:
+                self.btn_check_update.set_enabled(True)
+            except Exception:
+                pass
+            self.settings.set("last_update_check", int(time.time()))
+            if isinstance(result, Exception):
+                reason = self._update_error_text(result)
+                if manual:
+                    self.update_status.configure(text="检查失败：%s" % reason, fg=self.pal["err"])
+                    messagebox.showwarning(APP_TITLE,
+                                           "检查更新失败：%s\n\n也可以直接去项目主页下载新版。"
+                                           % reason)
+                else:
+                    # A background check that cannot reach GitHub is not an
+                    # error the user needs to fix; keep it quiet.
+                    self.update_status.configure(text="暂时查不到更新（可点「检查更新」再试）",
+                                                 fg=self.pal["text_muted"])
+                return
+            tag = result.get("tag_name") or ""
+            if not updater.is_newer(tag, theme.APP_VERSION):
+                self.update_status.configure(text="已是最新版本（%s）" % (tag or "?"),
+                                             fg=self.pal["ok"])
+                if manual:
+                    messagebox.showinfo(APP_TITLE, "已是最新版本。")
+                return
+            asset = updater.pick_asset(result)
+            if not asset:
+                self.update_status.configure(text="发现 %s，但这个版本没有 Windows 包" % tag,
+                                             fg=self.pal["warn"])
+                return
+            self.update_release = result
+            self.update_asset = asset
+            self.update_status.configure(text="发现新版本 %s" % tag, fg=self.pal["accent"])
+            self.btn_install_update.pack(side="right")
+
+        # Fetch on a worker thread, but deliver on the Tk thread through a
+        # poller scheduled here: Tk refuses cross-thread calls when the
+        # interpreter is not inside mainloop (which is the case in tests).
+        box = []
+
+        def fetch():
+            box.append(worker())
+
+        threading.Thread(target=fetch, daemon=True).start()
+
+        def poll():
+            if box:
+                done(box[0])
+                return
+            try:
+                self.root.after(100, poll)
+            except Exception:
+                pass
+
+        self.root.after(100, poll)
+
+    @staticmethod
+    def _update_error_text(exc):
+        text = str(exc)
+        if "403" in text or "rate limit" in text.lower():
+            return "GitHub 访问太频繁（限流），过一会儿再试"
+        if "timed out" in text.lower() or "timeout" in text.lower():
+            return "连不上 GitHub（超时）"
+        if "urlopen" in text or "getaddrinfo" in text or "Connection" in text:
+            return "连不上 GitHub（网络不通）"
+        return text
+
+    def do_update(self):
+        if not self.update_asset:
+            return
+        install = updater.install_dir()
+        if not updater.dir_writable(install):
+            messagebox.showwarning(
+                APP_TITLE, "程序目录不可写（可能装在 Program Files），请手动下载更新包覆盖。")
+            webbrowser.open("https://github.com/fenghuo6183/HousamoAuthKeyManager/releases/latest")
+            return
+        tag = (self.update_release or {}).get("tag_name") or ""
+        if not messagebox.askyesno(
+                APP_TITLE,
+                "将下载 %s 并在关闭本程序后替换安装目录，然后自动重启。\n继续吗？" % tag):
+            return
+        self.btn_install_update.set_enabled(False)
+        self.btn_check_update.set_enabled(False)
+        self.update_status.configure(text="正在下载…", fg=self.pal["text_muted"])
+
+        def worker():
+            zip_path = updater.download(self.update_asset["url"],
+                                        self.update_asset.get("digest", ""),
+                                        lambda m: self.log("更新", m))
+            stage = updater.stage_copy(install, log=lambda m: self.log("更新", m))
+            return zip_path, stage
+
+        def done(result):
+            if not result:
+                self.btn_install_update.set_enabled(True)
+                self.btn_check_update.set_enabled(True)
+                self.update_status.configure(text="下载失败，可以看日志或再试一次",
+                                             fg=self.pal["err"])
+                self.btn_view_log.pack(side="right")
+                return
+            zip_path, stage = result
+            name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) \
+                else "AuthKeyManager.exe"
+            exe = os.path.join(stage, name)
+            if not os.path.isfile(exe):
+                self.log("错误", "临时目录里没有可执行文件：%s" % exe)
+                messagebox.showerror(APP_TITLE, "更新失败：临时目录里没有可执行文件。")
+                return
+            updater.write_state(stage="applying", target_version=tag,
+                                zip=zip_path, install=install)
+            subprocess.Popen([exe, "--apply-update", zip_path, install, str(os.getpid())],
+                             cwd=stage,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+            self.log("更新", "更新程序已启动，本程序即将退出")
+            self.root.after(300, self.root.destroy)
+
+        self._bg(worker, done)
+
+    def _apply_update_state(self):
+        state = updater.read_state()
+        stage = state.get("stage")
+        try:
+            if stage == "failed":
+                self.update_status.configure(
+                    text="上次更新失败：%s" % (state.get("error") or "未知原因"),
+                    fg=self.pal["err"])
+                self.btn_view_log.pack(side="right")
+            elif stage == "applying" and updater.is_newer(state.get("target_version", ""),
+                                                          theme.APP_VERSION):
+                self.update_status.configure(text="上次更新没有完成，可以再试一次",
+                                             fg=self.pal["warn"])
+                self.btn_view_log.pack(side="right")
+        except Exception:
+            pass
+
+    def open_update_log(self):
+        path = updater.log_path()
+        if not os.path.isfile(path):
+            messagebox.showinfo(APP_TITLE, "还没有更新日志。")
+            return
+        try:
+            os.startfile(path)
+        except Exception as exc:
+            self.log("错误", "打开日志失败：%s" % exc)
+
+    def _refresh_bg_panel(self):
+        path = self.settings.get("bg_image") or ""
+        if path and os.path.isfile(path):
+            name = os.path.basename(path)
+            try:
+                from PIL import ImageTk
+                photo = ImageTk.PhotoImage(self.backdrop.thumbnail(132, 74, 8))
+                self.thumb_label.configure(image=photo, text="", bg=self.pal["card_soft"])
+                self.thumb_label.image = photo
+            except Exception:
+                self.thumb_label.configure(image="", text=name[:18])
+            self.bg_name_label.configure(text=name)
+            self.bg_note_label.configure(text="已复制到应用数据目录，原始文件移动或删除都不影响")
+        else:
+            self.thumb_label.configure(image="", text="无背景图")
+            self.thumb_label.image = None
+            self.bg_name_label.configure(text="还没有选择背景图")
+            self.bg_note_label.configure(text="支持 png / jpg / bmp / webp，选择后会复制一份到应用数据目录")
+        self.blur_slider.set(self.settings.get("bg_blur"))
+        self.alpha_slider.set(self.settings.get("bg_alpha"))
+        self.blur_readout.configure(text="%d px" % int(self.settings.get("bg_blur")))
+        self.alpha_readout.configure(text="%d %%" % int(self.settings.get("bg_alpha")))
+
+    def _refresh_data_card(self):
+        rows = getattr(self, "data_rows", None)
+        if not rows:
+            return
+        folder = config.app_dir()
+        rows["data_dir"].configure(text=folder)
+        g = self.active_game
+        accounts = len(self.vault.by_kind("account")) if self.vault else 0
+        backups = len(self.vault.by_kind("backup")) if self.vault else 0
+        rows["vault"].configure(text="vault.%s.dat · %d 个账号 · %d 个备份（DPAPI 加密）"
+                                     % (g.id, accounts, backups))
+        rows["save_dir"].configure(
+            text=os.path.join(self.save_dir, g.label) if self.save_dir else "未选择")
+        rows["adb"].configure(text="就绪" if self.adb else "不可用（缺少 platform-tools）",
+                              fg=self.pal["ok"] if self.adb else self.pal["err"])
+
+    def open_data_dir(self):
+        try:
+            os.startfile(config.app_dir())
+        except Exception as exc:
+            self.log("错误", "打开数据目录失败：%s" % exc)
+
+    def copy_data_dir(self):
+        folder = config.app_dir()
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(folder)
+            self.log("完成", "数据目录已复制：%s" % folder)
+        except Exception as exc:
+            self.log("错误", "复制失败：%s" % exc)
+
     # -- logging -------------------------------------------------------
     def log(self, tag, message):
         if threading.current_thread() is not threading.main_thread():
             self.root.after(0, self.log, tag, message)
             return
-        line = "[%s] %s\n" % (tag, message)
-        self.log_text.insert("end", line)
-        self.log_text.see("end")
+        try:
+            self.log_empty.place_forget()
+        except Exception:
+            pass
+        try:
+            self.log_text.configure(state="normal")
+            self.log_text.insert("end", time.strftime("%H:%M:%S  "), ("time",))
+            kind = "err" if tag in ("错误", "失败") else "ok" if tag == "完成" else \
+                "hint" if tag in ("提示", "设置") else ""
+            self.log_text.insert("end", "[%s] %s\n" % (tag, message), (kind,) if kind else ())
+            self.log_text.see("end")
+            self.log_text.configure(state="disabled")
+        except Exception:
+            pass
+
+    def clear_log(self):
+        try:
+            self.log_empty.place(relx=0.5, rely=0.45, anchor="center")
+        except Exception:
+            pass
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", "end")
+        self.log_text.configure(state="disabled")
 
     def _bg(self, worker, on_done=None):
         if self._busy:
@@ -231,8 +1091,6 @@ class App:
 
     def _finish(self, result, error, on_done):
         self._busy = False
-        self.save_dir = ""
-        self._load_settings()
         self._set_buttons("normal")
         if error is not None:
             self.log("失败", str(error))
@@ -242,8 +1100,9 @@ class App:
             on_done(result)
 
     def _set_buttons(self, state):
+        enabled = state != "disabled"
         for btn in (self.btn_extract, self.btn_import):
-            btn.configure(state=state)
+            btn.set_enabled(enabled)
 
     # -- devices -------------------------------------------------------
     def selected_device(self):
@@ -258,16 +1117,80 @@ class App:
                 return dev
         return None
 
+    # -- game switching ------------------------------------------------
+    def switch_game(self, game_id):
+        g = game.game_by_id(game_id)
+        if g.id == self.active_game.id and self.vault is not None:
+            return
+        self.active_game = g
+        self.settings.set("active_game", g.id)
+        vault = self.vaults.get(g.id)
+        if vault is None:
+            try:
+                vault = vault_mod.Vault(game_id=g.id)
+                self.vaults[g.id] = vault
+            except Exception as exc:
+                self.log("错误", "账号库加载失败（%s）：%s" % (g.label, exc))
+                return
+        self.vault = vault
+        if getattr(self, "game_seg", None):
+            self.game_seg.set_active(g.id)
+        self.btn_extract.set_text("提取 %s 的 key" % g.label)
+        self.btn_import.set_text("导入到 %s" % g.label)
+        self._update_device_hint()
+        self.refresh_vault()
+        self._refresh_data_card()
+        self._check_game_installed()
+        self.refresh_reconcile()
+        self.log("设备", "已切换到 %s" % g.label)
+
+    def _update_device_hint(self):
+        try:
+            if not self.devices:
+                self.device_hint.configure(text="没有发现设备")
+            else:
+                self.device_hint.configure(
+                    text="已发现 %d 台设备，选中一台后点下面「提取 %s 的 key」"
+                         % (len(self.devices), self.active_game.label))
+        except Exception:
+            pass
+
+    def _check_game_installed(self):
+        online = [d for d in self.devices if d.online]
+        if not self.adb or not online:
+            return
+        g = self.active_game
+        serial = online[0].serial
+
+        def runner():
+            ok = game.game_installed(self.adb, serial, g)
+            self.root.after(0, self._installed_done, g.id, ok)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def _installed_done(self, game_id, ok):
+        if game_id != self.active_game.id:
+            return
+        self.btn_extract.set_enabled(bool(ok))
+        if not ok:
+            self.log("设备", "这台设备上没有安装 %s" % self.active_game.label)
+
     def refresh_devices(self):
+        try:
+            self.device_empty.place_forget()
+            self.dev_sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
+        except Exception:
+            pass
         if not self.adb:
             messagebox.showerror(APP_TITLE, "adb 不可用，请检查 platform-tools 是否放在 assets/platform-tools 下。")
             return
+        self._set_adb_chip("正在检测设备…", "muted")
         self._bg(self._devices_worker, self._devices_done)
 
     def _devices_worker(self):
         devices = [d for d in self.adb.devices()]
         for dev in devices:
-            dev.root = "?" 
+            dev.root = "?"
             if dev.online:
                 try:
                     dev.root = "是" if self.adb.su_available(dev.serial) else "否"
@@ -278,18 +1201,36 @@ class App:
     def _devices_done(self, devices):
         self.devices = devices
         self.dev_tree.delete(*self.dev_tree.get_children())
-        for dev in devices:
-            self.dev_tree.insert("", "end", values=(dev.label, dev.state, dev.root, dev.serial))
+        cols = ("label", "state", "root", "serial")
+        for index, dev in enumerate(devices):
+            raw = (dev.label, dev.state, dev.root, dev.serial)
+            values = tuple(self._fit_cell(self.dev_tree, col, val)
+                           for col, val in zip(cols, raw))
+            self.dev_tree.insert("", "end", values=values,
+                                 tags=("odd",) if index % 2 else ())
         if devices:
             self.dev_tree.selection_set(self.dev_tree.get_children()[0])
+            online = sum(1 for d in devices if d.online)
+            self._set_adb_chip("%d 台在线" % online if online else "%d 台离线" % len(devices),
+                               "ok" if online else "warn")
+            self._update_device_hint()
+            self.dev_sb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
+            self.device_empty.place_forget()
             self.log("设备", "发现 %d 台设备" % len(devices))
         else:
+            self._set_adb_chip("未发现设备", "warn")
+            self._update_device_hint()
+            self.dev_sb.pack_forget()
+            self.device_empty.place(relx=0.5, rely=0.42, anchor="center")
             self.log("设备", "没有发现设备。请打开 USB 调试，或先启动模拟器再点「扫描模拟器」。")
+        self._check_game_installed()
+        self.refresh_reconcile()
 
     def scan_emulators(self):
         if not self.adb:
             messagebox.showerror(APP_TITLE, "adb 不可用。")
             return
+        self._set_adb_chip("正在扫描模拟器…", "muted")
 
         def worker():
             hits = 0
@@ -307,15 +1248,127 @@ class App:
         self._bg(worker, done)
 
     # -- vault view ----------------------------------------------------
+    def _cell_font(self):
+        font = getattr(self, "_cell_font_cache", None)
+        if font is None:
+            family, size, weight = theme.font(10)
+            font = tkfont.Font(family=family, size=size, weight=weight)
+            self._cell_font_cache = font
+        return font
+
+    def _fit_cell(self, tree, col, text, pad=16, keep_tail=""):
+        """Trim a cell to the column width with an ellipsis instead of hard clipping.
+
+        keep_tail keeps a meaningful suffix (e.g. the " (128)" of a fingerprint)
+        visible after the ellipsis instead of truncating it away.
+        """
+        text = "" if text is None else str(text)
+        tail = ""
+        if keep_tail and text.endswith(keep_tail) and len(text) > len(keep_tail):
+            tail = keep_tail
+            text = text[:-len(keep_tail)]
+        try:
+            width = int(tree.column(col, "width"))
+        except Exception:
+            return text
+        avail = max(theme.px(24), width - theme.px(pad))
+        font = self._cell_font()
+        try:
+            if font.measure(text) <= avail:
+                return text
+        except Exception:
+            return text
+        ell = "…"
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if font.measure(text[:mid] + ell + tail) <= avail:
+                lo = mid
+            else:
+                hi = mid - 1
+        if lo:
+            return text[:lo].rstrip() + ell + tail
+        keep = ell + tail
+        return keep if font.measure(keep) <= avail else ell
+
+    @staticmethod
+    def _source_label(source):
+        """把 "序列号 /data/data/.../x.xml" 压成 "模拟器 · x.xml"，避免列里被硬截断。"""
+        text = (source or "").strip()
+        if not text:
+            return "—"
+        head, _sep, tail = text.partition(" ")
+        path = tail or head
+        serial = head if tail else ""
+        node = path.rstrip("/").rsplit("/", 1)[-1] or path
+        if serial:
+            low = serial.lower()
+            where = "模拟器" if (low.startswith("127.0.0.1")
+                                or low.startswith("emulator")) else "设备"
+            return "%s · %s" % (where, node)
+        if "/data/data/" in path:
+            return "本机 · " + node
+        return node if len(node) <= 24 else node[:23] + "…"
+
     def refresh_vault(self):
         if not self.vault:
             return
+        keyword = ""
+        try:
+            keyword = self.search_var.get().strip().lower()
+        except Exception:
+            keyword = ""
+        entries = self.vault.by_kind(self.vault_kind)
+        if keyword:
+            entries = [e for e in entries
+                       if keyword in (e.get("name", "").lower()
+                                      or "") or keyword in (e.get("note", "").lower() or "")
+                       or keyword in (e.get("fingerprint", "").lower() or "")
+                       or keyword in (e.get("source", "").lower() or "")]
         self.vault_tree.delete(*self.vault_tree.get_children())
-        for entry in self.vault.entries:
-            self.vault_tree.insert("", "end", iid=entry["id"], values=(
-                entry.get("name", ""), entry.get("note", ""), entry.get("fingerprint", ""),
-                entry.get("source", ""), entry.get("created_at", "")))
-        self.count_label.configure(text="共 %d 个账号" % len(self.vault.entries))
+        def cell(col, text):
+            tail = ""
+            if col == "fingerprint":
+                match = re.search(r"\s*\(\d+\)$", str(text))
+                tail = match.group(0) if match else ""
+            return self._fit_cell(self.vault_tree, col, text, keep_tail=tail)
+
+        for index, e in enumerate(entries):
+            self.vault_tree.insert("", "end", iid=e["id"], values=(
+                cell("name", e.get("name", "")),
+                cell("note", e.get("note", "")),
+                cell("fingerprint", e.get("fingerprint", "")),
+                cell("source", self._source_label(e.get("source", ""))),
+                cell("created", e.get("created_at", ""))),
+                tags=("odd",) if index % 2 else ())
+        label_text = "账号" if self.vault_kind == "account" else "备份"
+        total = len(self.vault.by_kind(self.vault_kind))
+        all_total = len(self.vault.entries)
+        if keyword:
+            self.count_chip.configure(text="%d / %d 个%s" % (len(entries), total, label_text),
+                                     bg=self.pal["accent_soft"], fg=self.pal["accent"])
+        else:
+            self.count_chip.configure(text="%d 个%s · 共 %d" % (total, label_text, all_total),
+                                     bg=self.pal["card_soft"], fg=self.pal["text_muted"])
+        self._update_vault_actions()
+
+    def switch_vault_kind(self, kind):
+        self.vault_kind = kind
+        if getattr(self, "kind_seg", None):
+            self.kind_seg.set_active(kind)
+        self.refresh_vault()
+
+    def _update_vault_actions(self):
+        entry = self.selected_entry()
+        backup = bool(entry and entry.get("kind") == "backup")
+        for name in ("btn_rename", "btn_note"):
+            button = getattr(self, name, None)
+            if button is None:
+                continue
+            try:
+                button.set_enabled(not backup)
+            except Exception:
+                pass
 
     def selected_entry(self):
         sel = self.vault_tree.selection()
@@ -332,6 +1385,75 @@ class App:
             return False
         return True
 
+    # -- startup reconcile ---------------------------------------------
+    def refresh_reconcile(self):
+        try:
+            self.reconcile_bar.pack_forget()
+        except Exception:
+            pass
+        self._reconcile_key = None
+        if not self.adb:
+            return
+        online = [d for d in self.devices if d.online]
+        if len(online) != 1:
+            return
+        g = self.active_game
+        serial = online[0].serial
+        token = getattr(self, "_reconcile_token", 0) + 1
+        self._reconcile_token = token
+
+        def done(key):
+            if key is None or token != self._reconcile_token:
+                return
+            ignored = (self.settings.get("reconcile_ignored") or {}).get(g.id, [])
+            flag, digest = reconcile.should_prompt(self.vault, key, ignored)
+            if not flag:
+                return
+            self._reconcile_key = key
+            self._reconcile_digest = digest
+            self._reconcile_serial = serial
+            self.reconcile_text.configure(
+                text="%s 里正在用的 key（%s）不在账号库里，要不要存一份？"
+                     % (g.label, game.fingerprint(key)))
+            self.reconcile_bar.pack(fill="x", pady=(theme.px(12), theme.px(0)),
+                                    before=self.tree_box)
+            self.log("设备", "发现账号库里没有的 key：%s" % game.fingerprint(key))
+
+        def runner():
+            try:
+                key, _source = game.extract(self.adb, serial, g)
+            except Exception:
+                key = None
+            self.root.after(0, done, key)
+
+        threading.Thread(target=runner, daemon=True).start()
+
+    def save_reconcile_entry(self):
+        key = getattr(self, "_reconcile_key", None)
+        if not key:
+            self.reconcile_bar.pack_forget()
+            return
+        name = "游戏内快照 %s" % time.strftime("%Y-%m-%d %H:%M")
+        entry, created = self.vault.add(
+            name=name, key=key, note="启动核对时发现",
+            source=getattr(self, "_reconcile_serial", ""),
+            device=getattr(self, "_reconcile_serial", ""), kind="account")
+        self.vault_kind = "account"
+        if getattr(self, "kind_seg", None):
+            self.kind_seg.set_active("account")
+        self.refresh_vault()
+        self.reconcile_bar.pack_forget()
+        self._reconcile_key = None
+        self.log("完成", ("已存为 %s" if created else "账号库里已经有 %s") % entry.get("name"))
+
+    def dismiss_reconcile(self):
+        digest = getattr(self, "_reconcile_digest", "")
+        if digest:
+            config.ignore_reconcile(self.settings, self.active_game.id, digest)
+        self.reconcile_bar.pack_forget()
+        self._reconcile_key = None
+        self.log("设备", "已忽略这次核对（以后不再提示这个 key）")
+
     # -- actions -------------------------------------------------------
     def do_extract(self):
         if not self._require(device=True, entry=False):
@@ -340,12 +1462,15 @@ class App:
         self.log("提取", "开始从 %s 提取 AuthKey" % dev.serial)
 
         def worker():
-            key, source = game.extract(self.adb, dev.serial, lambda m: self.log("提取", m))
+            g = self.active_game
+            key, source = game.extract(self.adb, dev.serial, g, lambda m: self.log("提取", m))
             return key, source
 
         def done(result):
             key, source = result
-            entry, created = self.vault.add(name="待命名账号", key=key, source=source, device=dev.serial)
+            entry, created = self.vault.add(name="待命名账号", key=key, source=source,
+                                             device=dev.serial, kind="account",
+                                             game=self.active_game.id)
             if created:
                 name = simpledialog.askstring(APP_TITLE, "给这个账号起个名字：", parent=self.root)
                 if name and name.strip():
@@ -354,7 +1479,8 @@ class App:
                 self.log("提取", "这个 key 已经在账号库里了：%s" % entry.get("name"))
             self.refresh_vault()
             self.vault_tree.selection_set(entry["id"])
-            self.log("完成", "已保存账号，指纹 %s" % entry.get("fingerprint"))
+            self.log("完成", "已保存 %s 账号，指纹 %s"
+                     % (self.active_game.label, entry.get("fingerprint")))
             out = self.export_to_dir(entry.get("name"), key)
             if out:
                 self.log("导出", "已写出 %s" % out)
@@ -374,13 +1500,18 @@ class App:
                                    "继续吗？" % (entry.get("name"), dev.serial)):
             return
         key = self.vault.key_of(entry)
+        if entry.get("kind") == "backup":
+            self.log("导入", "正在还原备份：%s" % entry.get("name"))
         self.log("导入", "目标设备 %s，账号 %s" % (dev.serial, entry.get("name")))
 
         def worker():
-            backup = game.backup_current(self.adb, dev.serial, self.vault, lambda m: self.log("备份", m))
+            g = self.active_game
+            backup = game.backup_current(self.adb, dev.serial, self.vault, g,
+                                         lambda m: self.log("备份", m))
             if backup:
                 self.log("备份", "已备份原 key：%s" % backup.get("name"))
-            target = game.import_key(self.adb, dev.serial, key, lambda m: self.log("导入", m))
+            target = game.import_key(self.adb, dev.serial, key, g,
+                                     lambda m: self.log("导入", m))
             return target
 
         def done(target):
@@ -395,7 +1526,8 @@ class App:
             return
         dev = self.selected_device()
         try:
-            self.adb.shell(dev.serial, "monkey -p %s -c android.intent.category.LAUNCHER 1" % game.PKG, timeout=25)
+            self.adb.shell(dev.serial, "monkey -p %s -c android.intent.category.LAUNCHER 1"
+                           % self.active_game.pkg, timeout=25)
             self.log("设备", "已请求启动游戏")
         except Exception as exc:
             self.log("失败", "启动游戏失败：%s" % exc)
@@ -405,6 +1537,9 @@ class App:
         entry = self.selected_entry()
         if not entry:
             return
+        if entry.get("kind") == "backup":
+            messagebox.showinfo(APP_TITLE, "备份条目不能改名；需要的话先导入回游戏，再存成账号。")
+            return
         name = simpledialog.askstring(APP_TITLE, "新名称：", initialvalue=entry.get("name", ""), parent=self.root)
         if name and name.strip():
             self.vault.update(entry["id"], name=name.strip())
@@ -413,6 +1548,9 @@ class App:
     def edit_note(self):
         entry = self.selected_entry()
         if not entry:
+            return
+        if entry.get("kind") == "backup":
+            messagebox.showinfo(APP_TITLE, "备份条目不能改备注。")
             return
         note = simpledialog.askstring(APP_TITLE, "备注：", initialvalue=entry.get("note", ""), parent=self.root)
         if note is not None:
@@ -433,15 +1571,22 @@ class App:
         entry = self.selected_entry()
         if not entry:
             return
+        pal = self.pal
         text = self.vault.key_of(entry).decode("utf-8", "replace")
         win = tk.Toplevel(self.root)
         win.title("Key - " + entry.get("name", ""))
-        win.geometry("640x220")
-        box = tk.Text(win, wrap="char", font=("Consolas", 10))
+        win.geometry("%dx%d" % (theme.px(660), theme.px(240)))
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        frame = tk.Frame(win, bg=pal["card"])
+        frame.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        box = tk.Text(frame, wrap="char", font=theme.mono(10), bd=0, highlightthickness=0,
+                      bg=pal["card_soft"], fg=pal["text"], padx=theme.px(12), pady=theme.px(10))
         box.insert("1.0", text)
         box.configure(state="disabled")
-        box.pack(fill="both", expand=True, padx=10, pady=10)
-        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+        box.pack(fill="both", expand=True)
+        PillButton(self, win, "关闭", command=win.destroy, kind="soft",
+                   width=96, height=34).pack(pady=(theme.px(0), theme.px(14)))
 
     def export_selected_to_dir(self):
         entry = self.selected_entry()
