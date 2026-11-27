@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.15";
+    static final String CURRENT_VER = "1.0.16";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -822,19 +822,25 @@ public class MainActivity extends Activity {
         bClear.setBackground(roundRect(Color.WHITE, 10, Color.parseColor("#F3B4B6"), 1));
         bClear.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
-                new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("清空账号库")
-                        .setMessage("会删除本机保存的所有账号记录（各账号导出到 Download 的 AuthKey.txt 不会删）。")
-                        .setPositiveButton("清空", new android.content.DialogInterface.OnClickListener() {
-                            public void onClick(android.content.DialogInterface d, int w) {
-                                accounts.clear();
-                                saveVault();
-                                refreshList();
-                                log("[库] 已清空账号库");
-                            }
-                        })
-                        .setNegativeButton("取消", null)
-                        .show();
+                LinearLayout c = dlgCard();
+                dlgTitle(c, "清空账号库");
+                dlgSub(c, "会删除本机保存的所有账号记录。各账号导出到 Download 的 AuthKey.txt 不会删。");
+                final AlertDialog[] h = new AlertDialog[1];
+                c.addView(dlgPrimary("清空", new View.OnClickListener() {
+                    public void onClick(View v) {
+                        accounts.clear();
+                        saveVault();
+                        refreshList();
+                        log("[库] 已清空账号库");
+                        if (h[0] != null) h[0].dismiss();
+                    }
+                }));
+                LinearLayout row = dlgBtnRow();
+                dlgAddGhost(row, "取消", new View.OnClickListener() {
+                    public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                }, false);
+                c.addView(row);
+                h[0] = showCard(c);
             }
         });
         LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1477,31 +1483,43 @@ public class MainActivity extends Activity {
             boolean installed = isInstalled(PKG_SHI);
             if (!installed) {
                 log("[Shizuku] 未安装 Shizuku，已引导下载。");
-                new AlertDialog.Builder(this)
-                        .setTitle("未安装 Shizuku")
-                        .setMessage("Shizuku 能把 adb 权限借给本应用，让 Android 11+ 不用 root 也能读写游戏目录。\n\n装好后打开它，按提示用「无线调试」启动，再回到这里点 Shizuku 授权。")
-                        .setPositiveButton("去下载", new android.content.DialogInterface.OnClickListener() {
-                            public void onClick(android.content.DialogInterface d, int w) {
-                                openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
-                            }
-                        })
-                        .setNegativeButton("取消", null)
-                        .show();
+                LinearLayout c = dlgCard();
+                dlgTitle(c, "还没装 Shizuku");
+                dlgSub(c, "Shizuku 能把 adb 权限借给本应用，让 Android 11+ 不用 root 也能读写游戏目录。装好后打开它，按提示用「无线调试」启动，再回这里点「Shizuku 权限」授权。");
+                final AlertDialog[] h = new AlertDialog[1];
+                c.addView(dlgPrimary("去下载 Shizuku", new View.OnClickListener() {
+                    public void onClick(View v) {
+                        if (h[0] != null) h[0].dismiss();
+                        openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
+                    }
+                }));
+                LinearLayout row = dlgBtnRow();
+                dlgAddGhost(row, "取消", new View.OnClickListener() {
+                    public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                }, false);
+                c.addView(row);
+                h[0] = showCard(c);
                 return;
             }
             log("[Shizuku] 已安装但服务未运行，请先启动 Shizuku。");
-            new AlertDialog.Builder(this)
-                    .setTitle("Shizuku 未启动")
-                    .setMessage("打开 Shizuku 后按它的提示启动服务（重启手机后需要重新启动），再回来点「刷新」。")
-                    .setPositiveButton("打开 Shizuku", new android.content.DialogInterface.OnClickListener() {
-                        public void onClick(android.content.DialogInterface d, int w) {
-                            Intent i = getPackageManager().getLaunchIntentForPackage(PKG_SHI);
-                            if (i != null) startActivity(i);
-                            else openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
-                        }
-                    })
-                    .setNegativeButton("取消", null)
-                    .show();
+            LinearLayout c = dlgCard();
+            dlgTitle(c, "Shizuku 还没启动");
+            dlgSub(c, "打开 Shizuku 后按它的提示启动服务（手机重启后要重新启动一次），再回这里点「刷新」或「Shizuku 权限」。");
+            final AlertDialog[] h = new AlertDialog[1];
+            c.addView(dlgPrimary("打开 Shizuku", new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (h[0] != null) h[0].dismiss();
+                    Intent i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                    if (i != null) startActivity(i);
+                    else openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
+                }
+            }));
+            LinearLayout row = dlgBtnRow();
+            dlgAddGhost(row, "取消", new View.OnClickListener() {
+                public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+            }, false);
+            c.addView(row);
+            h[0] = showCard(c);
             return;
         }
         if (shizukuGrantedNow()) {
@@ -1611,89 +1629,310 @@ public class MainActivity extends Activity {
         });
     }
 
+    // ---------- 好看点的弹窗 ----------
+
+    private LinearLayout dlgCard() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackground(roundRect(Color.WHITE, 20, 0, 0));
+        c.setPadding(dp(20), dp(20), dp(20), dp(14));
+        return c;
+    }
+
+    private void dlgTitle(LinearLayout c, String title) {
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(17);
+        t.setTextColor(Color.parseColor("#101418"));
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        c.addView(t);
+    }
+
+    private void dlgSub(LinearLayout c, String text) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextSize(12.5f);
+        t.setTextColor(Color.parseColor("#6B7280"));
+        t.setLineSpacing(dp(4), 1.0f);
+        t.setPadding(0, dp(8), 0, 0);
+        c.addView(t);
+    }
+
+    private View dlgStep(int num, String head, String body) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(14), 0, 0);
+        TextView n = new TextView(this);
+        n.setText(String.valueOf(num));
+        n.setTextSize(11);
+        n.setGravity(Gravity.CENTER);
+        n.setTextColor(Color.WHITE);
+        n.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        n.setBackground(roundRect(Color.parseColor("#2F6BFF"), 11, 0, 0));
+        LinearLayout.LayoutParams np = new LinearLayout.LayoutParams(dp(22), dp(22));
+        np.rightMargin = dp(10);
+        row.addView(n, np);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView h = new TextView(this);
+        h.setText(head);
+        h.setTextSize(13.5f);
+        h.setTextColor(Color.parseColor("#101418"));
+        h.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        col.addView(h);
+        TextView b = new TextView(this);
+        b.setText(body);
+        b.setTextSize(12.5f);
+        b.setTextColor(Color.parseColor("#6B7280"));
+        b.setLineSpacing(dp(3), 1.0f);
+        b.setPadding(0, dp(3), 0, 0);
+        col.addView(b);
+        row.addView(col, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        return row;
+    }
+
+    private View dlgOption(String title, String desc, View.OnClickListener click) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundRect(Color.parseColor("#F5F7FB"), 14, Color.parseColor("#E7EBF2"), 1));
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams bp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bp.topMargin = dp(10);
+        box.setLayoutParams(bp);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13.5f);
+        t.setTextColor(Color.parseColor("#101418"));
+        t.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        box.addView(t);
+        TextView d = new TextView(this);
+        d.setText(desc);
+        d.setTextSize(12.5f);
+        d.setTextColor(Color.parseColor("#6B7280"));
+        d.setLineSpacing(dp(3), 1.0f);
+        d.setPadding(0, dp(4), 0, dp(8));
+        box.addView(d);
+        TextView go = new TextView(this);
+        go.setText("怎么弄  →");
+        go.setTextSize(12.5f);
+        go.setTextColor(Color.parseColor("#2F6BFF"));
+        go.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+        box.addView(go);
+        box.setOnClickListener(click);
+        return box;
+    }
+
+    private Button dlgPrimary(String text, View.OnClickListener click) {
+        Button b = mkBtn(text, true);
+        b.setTextSize(14);
+        b.setTextColor(Color.WHITE);
+        b.setOnClickListener(click);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        p.topMargin = dp(16);
+        b.setLayoutParams(p);
+        return b;
+    }
+
+    private Button dlgGhost(String text, View.OnClickListener click, boolean blue) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextSize(13);
+        b.setTextColor(Color.parseColor(blue ? "#2F6BFF" : "#6B7280"));
+        b.setBackground(roundRect(Color.TRANSPARENT, 10, 0, 0));
+        b.setStateListAnimator(null);
+        b.setElevation(0);
+        b.setMinHeight(dp(40));
+        b.setMinWidth(0);
+        b.setPadding(0, 0, 0, 0);
+        if (click != null) b.setOnClickListener(click);
+        return b;
+    }
+
+    private TextView dlgCode(String code) {
+        TextView t = new TextView(this);
+        t.setText(code);
+        t.setTextSize(11.5f);
+        t.setTypeface(android.graphics.Typeface.MONOSPACE);
+        t.setTextColor(Color.parseColor("#3B4252"));
+        t.setBackground(roundRect(Color.parseColor("#F2F4F8"), 10, 0, 0));
+        t.setPadding(dp(12), dp(10), dp(12), dp(10));
+        t.setTextIsSelectable(true);
+        t.setLineSpacing(dp(2), 1.0f);
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.topMargin = dp(10);
+        t.setLayoutParams(p);
+        return t;
+    }
+
+    private AlertDialog showCard(LinearLayout card) {
+        ScrollView sv = new ScrollView(this);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setClipToPadding(false);
+        sv.addView(card, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        AlertDialog d = new AlertDialog.Builder(this).setView(sv).create();
+        d.show();
+        android.view.Window w = d.getWindow();
+        if (w != null) {
+            w.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(Color.TRANSPARENT));
+            int width = (int) (getResources().getDisplayMetrics().widthPixels * 0.90f);
+            w.setLayout(width, ViewGroup.LayoutParams.WRAP_CONTENT);
+        }
+        return d;
+    }
+
+    private LinearLayout dlgBtnRow() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(6), 0, 0);
+        return row;
+    }
+
+    private void dlgAddGhost(LinearLayout row, String text, View.OnClickListener click, boolean blue) {
+        row.addView(dlgGhost(text, click, blue), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+    }
+
+    private EditText dlgInput(String def) {
+        EditText et = new EditText(this);
+        et.setText(def);
+        et.setSingleLine(true);
+        et.setInputType(InputType.TYPE_CLASS_TEXT);
+        et.setTextSize(14);
+        et.setTextColor(Color.parseColor("#101418"));
+        et.setPadding(dp(12), dp(10), dp(12), dp(10));
+        et.setBackground(roundRect(Color.parseColor("#F5F7FB"), 12, Color.parseColor("#E7EBF2"), 1));
+        et.setSelection(et.getText().length());
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.topMargin = dp(14);
+        et.setLayoutParams(p);
+        return et;
+    }
+
+    private View dlgMenuItem(String title, String desc, boolean danger, View.OnClickListener click) {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(roundRect(Color.parseColor("#F7F8FB"), 14, 0, 0));
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
+        box.setClickable(true);
+        box.setOnClickListener(click);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14);
+        t.setTextColor(Color.parseColor(danger ? "#E5484D" : "#101418"));
+        box.addView(t);
+        if (desc != null && desc.length() > 0) {
+            TextView d = new TextView(this);
+            d.setText(desc);
+            d.setTextSize(11.5f);
+            d.setTextColor(Color.parseColor("#8A93A0"));
+            d.setPadding(0, dp(3), 0, 0);
+            box.addView(d);
+        }
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        p.topMargin = dp(10);
+        box.setLayoutParams(p);
+        return box;
+    }
+
+    private void startTreePick() {
+        try {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            startActivityForResult(i, REQ_TREE_COPY);
+        } catch (Throwable t) {
+            toast("无法打开文件夹选择器");
+        }
+    }
+
+
     /** 真正要读写游戏目录、但一点权限都没有时的统一提示。 */
     private void showNoPerm() {
         log("[权限] 既没有 root 也没有 Shizuku，读不到游戏的数据目录。");
-        new AlertDialog.Builder(this)
-                .setTitle("现在还没有读写权限")
-                .setMessage("Android 11 以后，普通 App 读不到游戏的数据目录，这一步只能靠下面两种方式之一：\n\n· Shizuku：手机上装一下就能弄，免 root，推荐\n· 电脑 + USB 线：用 Windows 版，手机什么都不用装")
-                .setPositiveButton("用 Shizuku", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) { showShizukuGuide(); }
-                })
-                .setNeutralButton("用电脑", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) { showPcGuide(); }
-                })
-                .setNegativeButton("知道了", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "还差一步读写权限");
+        dlgSub(c, "Android 11 以后，普通 App 读不到游戏的数据目录。下面两种方式任选一种，弄好之后回来点提取就行。");
+        c.addView(dlgOption("① 装 Shizuku（免 root，推荐）",
+                "手机上下载一个 Shizuku，用开发者选项里的「无线调试」启动一次；不用电脑，手机重启后重新启动一次即可。",
+                new View.OnClickListener() {
+                    public void onClick(View v) { showShizukuGuide(); }
+                }));
+        c.addView(dlgOption("② 用电脑 + USB 线",
+                "不想装东西就把手机插到电脑上，用 Windows 版一次性搞定，提取和导入都在电脑那边做。",
+                new View.OnClickListener() {
+                    public void onClick(View v) { showPcGuide(); }
+                }));
+        showCard(c);
     }
 
     /** Shizuku 从装到授权的完整步骤。 */
     private void showShizukuGuide() {
-        String steps = "Shizuku 会把 adb 权限借给本 App，没有 root 的手机也能读写游戏目录。全程大概 2 分钟，手机重启后要重新启动一次。\n\n"
-                + "第 1 步｜装 Shizuku\n"
-                + "点下面「去下载」，装好先别急着打开。\n\n"
-                + "第 2 步｜打开开发者选项\n"
-                + "设置 → 关于手机 → 连点「版本号」7 次。\n"
-                + "小米 / Redmi：设置 → 我的设备 → 全部参数与信息 → 连点「OS 版本」7 次。\n\n"
-                + "第 3 步｜开 USB 调试和无线调试\n"
-                + "设置 → 更多设置（或「系统」）→ 开发者选项 → 打开「USB 调试」和「无线调试」。\n\n"
-                + "第 4 步｜在 Shizuku 里启动服务\n"
-                + "打开 Shizuku → 点「通过无线调试启动」→ 点「配对」→ 在系统的「无线调试」页里点「使用配对码配对设备」，把配对码和端口填进 Shizuku → 回到 Shizuku 点「启动」。\n\n"
-                + "第 5 步｜回来授权\n"
-                + "回到本 App，点这张卡下面的「我已经弄好了，检查一次」，或在设置页点「Shizuku 权限」，在弹窗里点「允许」。授权成功后这张卡会自动消失。";
-        final ScrollView sv = new ScrollView(this);
-        TextView tv = new TextView(this);
-        tv.setText(steps);
-        tv.setTextSize(13);
-        tv.setTextColor(Color.parseColor("#40474F"));
-        tv.setLineSpacing(dp(3), 1f);
-        tv.setPadding(dp(18), dp(10), dp(18), dp(10));
-        tv.setTextIsSelectable(true);
-        sv.addView(tv);
-        new AlertDialog.Builder(this)
-                .setTitle("用 Shizuku 免 root 开权限")
-                .setView(sv)
-                .setPositiveButton("去下载 Shizuku", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
-                    }
-                })
-                .setNeutralButton("打开 Shizuku", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        Intent i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
-                        if (i != null) startActivity(i);
-                        else openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
-                    }
-                })
-                .setNegativeButton("知道了", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "用 Shizuku 免 root 开权限");
+        dlgSub(c, "Shizuku 把 adb 权限借给本 App，没有 root 也能读写游戏目录。全程约 2 分钟；手机重启后要重新启动一次 Shizuku。");
+        c.addView(dlgStep(1, "装 Shizuku", "点下面的「去下载」，装好先别急着打开。"));
+        c.addView(dlgStep(2, "打开开发者选项", "设置 → 关于手机 → 连点「版本号」7 次。小米 / Redmi：设置 → 我的设备 → 全部参数与信息 → 连点「OS 版本」7 次。"));
+        c.addView(dlgStep(3, "开 USB 调试和无线调试", "设置 → 更多设置（或「系统」）→ 开发者选项 → 打开「USB 调试」和「无线调试」。"));
+        c.addView(dlgStep(4, "在 Shizuku 里启动服务", "打开 Shizuku → 点「通过无线调试启动」→ 点「配对」→ 在系统的「无线调试」页点「使用配对码配对设备」，把配对码和端口填进 Shizuku → 回到 Shizuku 点「启动」。"));
+        c.addView(dlgStep(5, "回来授权", "回到本 App，点「我已经弄好了，检查一次」，或在设置页点「Shizuku 权限」并允许。授权成功后引导卡会自动消失。"));
+        final AlertDialog[] holder = new AlertDialog[1];
+        c.addView(dlgPrimary("去下载 Shizuku", new View.OnClickListener() {
+            public void onClick(View v) { openUrl("https://github.com/RikkaApps/Shizuku/releases/latest"); }
+        }));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(6), 0, 0);
+        row.addView(dlgGhost("打开 Shizuku", new View.OnClickListener() {
+            public void onClick(View v) {
+                Intent i = getPackageManager().getLaunchIntentForPackage("moe.shizuku.privileged.api");
+                if (i != null) startActivity(i);
+                else openUrl("https://github.com/RikkaApps/Shizuku/releases/latest");
+            }
+        }, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        row.addView(dlgGhost("知道了", new View.OnClickListener() {
+            public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
+        }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        c.addView(row);
+        holder[0] = showCard(c);
     }
 
     /** 不想装 Shizuku 时，用电脑版的做法。 */
     private void showPcGuide() {
         final String pull = "adb pull /sdcard/Android/data/" + PKG + "/" + game.sub + "/" + game.file;
-        String msg = "不用给手机任何权限：用数据线连电脑，全程在电脑上做。\n\n"
-                + "1. 手机：设置 → 开发者选项 → 打开「USB 调试」，插上数据线，手机上弹窗点「允许调试」。\n"
-                + "2. 电脑：打开项目主页，下载 Release 里的 AuthKeyManager-win64.zip，解压后运行 AuthKeyManager.exe。\n"
-                + "3. 在电脑版里点「提取当前账号的 key」，key 会存到电脑上，手机 Download/东放Key/" + game.exportSub() + "/ 里也会留一份。\n"
-                + "4. 要换号就在电脑版里挑一个 key 点「导入到游戏」，写文件由电脑那边完成，手机不需要 root 或 Shizuku。\n\n"
-                + "习惯命令行的话，一条命令也能直接拿出来：\n" + pull;
-        new AlertDialog.Builder(this)
-                .setTitle("用电脑（Windows）提取 / 导入")
-                .setMessage(msg)
-                .setPositiveButton("复制 adb 命令", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        copyText(pull);
-                        toast("命令已复制");
-                    }
-                })
-                .setNeutralButton("打开项目主页", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        openUrl("https://github.com/fenghuo6183/HousamoAuthKeyManager");
-                    }
-                })
-                .setNegativeButton("知道了", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "用电脑（Windows）提取 / 导入");
+        dlgSub(c, "不用给手机任何权限：数据线连电脑，全程在电脑上做。");
+        c.addView(dlgStep(1, "手机打开 USB 调试", "设置 → 开发者选项 → 打开「USB 调试」，插上数据线，手机上弹窗点「允许调试」。"));
+        c.addView(dlgStep(2, "电脑打开项目主页", "下载 Release 里的 AuthKeyManager-win64.zip，解压后运行 AuthKeyManager.exe。"));
+        c.addView(dlgStep(3, "在电脑版点「提取」", "key 会存到电脑上，手机 Download/东放Key/" + game.exportSub() + "/ 里也会留一份。"));
+        c.addView(dlgStep(4, "要换号就在电脑版点「导入」", "写文件由电脑那边完成，手机不需要 root 或 Shizuku。"));
+        TextView codeHint = new TextView(this);
+        codeHint.setText("习惯命令行的话，这条命令可以直接拿出来：");
+        codeHint.setTextSize(12.5f);
+        codeHint.setTextColor(Color.parseColor("#6B7280"));
+        codeHint.setPadding(0, dp(16), 0, 0);
+        c.addView(codeHint);
+        c.addView(dlgCode(pull));
+        final AlertDialog[] holder = new AlertDialog[1];
+        c.addView(dlgPrimary("复制 adb 命令", new View.OnClickListener() {
+            public void onClick(View v) {
+                copyText(pull);
+                toast("命令已复制");
+                if (holder[0] != null) holder[0].dismiss();
+            }
+        }));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, dp(6), 0, 0);
+        row.addView(dlgGhost("打开项目主页", new View.OnClickListener() {
+            public void onClick(View v) { openUrl("https://github.com/fenghuo6183/HousamoAuthKeyManager"); }
+        }, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        row.addView(dlgGhost("知道了", new View.OnClickListener() {
+            public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
+        }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+        c.addView(row);
+        holder[0] = showCard(c);
     }
 
     private void copyText(String s) {
@@ -1966,27 +2205,28 @@ public class MainActivity extends Activity {
     /** 提取成功后：先让用户起名，再入库并导出到文件夹。 */
     private void askNameThenSave(final String key, final String source) {
         final String defName = "设备 " + Build.MODEL + " " + stamp();
-        final EditText et = new EditText(this);
-        et.setSingleLine(true);
-        et.setInputType(InputType.TYPE_CLASS_TEXT);
-        et.setText(defName);
-        et.setSelection(defName.length());
-        new AlertDialog.Builder(this)
-                .setTitle("给这个账号取个名字")
-                .setMessage("会同时导出到 手机存储/Download/东放Key/<名字>/AuthKey.txt")
-                .setView(et)
-                .setPositiveButton("保存", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        String n = et.getText().toString().trim();
-                        addAccount(n.length() > 0 ? n : defName, key, source);
-                    }
-                })
-                .setNegativeButton("用默认名", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        addAccount(defName, key, source);
-                    }
-                })
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "给这个账号取个名字");
+        dlgSub(c, "会同时导出到 手机存储/" + Environment.DIRECTORY_DOWNLOADS + "/东放Key/" + game.exportSub() + "/<名字>/AuthKey.txt");
+        final EditText et = dlgInput(defName);
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("保存", new View.OnClickListener() {
+            public void onClick(View v) {
+                String n = et.getText().toString().trim();
+                if (h[0] != null) h[0].dismiss();
+                addAccount(n.length() > 0 ? n : defName, key, source);
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "用默认名", new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                addAccount(defName, key, source);
+            }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     /** 用 MediaStore / 文件系统查 <默认导出根>/[游戏名/]<名字>/AuthKey.txt 是否已存在。 */
@@ -2184,17 +2424,30 @@ public class MainActivity extends Activity {
     private void showUpdatePrompt(final String ver, final String apkUrl) {
         promptedUpdate = ver;
         try {
-            new AlertDialog.Builder(this)
-                    .setTitle("发现新版本 " + ver)
-                    .setMessage("当前版本 " + CURRENT_VER + "。\n\n可以直接在这里下载并覆盖安装，账号库和导出文件夹里的 key 都不会动。\n\n更新包来自本项目的 GitHub Release。")
-                    .setPositiveButton("立即更新", new android.content.DialogInterface.OnClickListener() {
-                        public void onClick(android.content.DialogInterface d, int w) { downloadUpdate(ver, apkUrl); }
-                    })
-                    .setNegativeButton("稍后", null)
-                    .setNeutralButton("去网页", new android.content.DialogInterface.OnClickListener() {
-                        public void onClick(android.content.DialogInterface d, int w) { openUrl(apkUrl); }
-                    })
-                    .show();
+            LinearLayout c = dlgCard();
+            dlgTitle(c, "发现新版本 " + ver);
+            dlgSub(c, "当前是 " + CURRENT_VER + "。可以直接在这里下载覆盖安装，账号库和导出文件夹里的 key 都不会动。");
+            c.addView(dlgStep(1, "点下面的「立即更新」", "安装包在 App 内下载，进度会显示在弹窗里。"));
+            c.addView(dlgStep(2, "系统问「是否安装」时点允许", "如果提示「禁止安装未知应用」，会先带你去开那个开关，回来自动继续。"));
+            c.addView(dlgStep(3, "装好直接打开", "账号、备份、导出路径都还在原地。"));
+            final AlertDialog[] holder = new AlertDialog[1];
+            c.addView(dlgPrimary("立即更新", new View.OnClickListener() {
+                public void onClick(View v) {
+                    if (holder[0] != null) holder[0].dismiss();
+                    downloadUpdate(ver, apkUrl);
+                }
+            }));
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setPadding(0, dp(6), 0, 0);
+            row.addView(dlgGhost("去网页下载", new View.OnClickListener() {
+                public void onClick(View v) { openUrl(apkUrl); }
+            }, true), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            row.addView(dlgGhost("稍后再说", new View.OnClickListener() {
+                public void onClick(View v) { if (holder[0] != null) holder[0].dismiss(); }
+            }, false), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.0f));
+            c.addView(row);
+            holder[0] = showCard(c);
         } catch (Throwable t) {
             log("[更新] 弹窗失败：" + t);
         }
@@ -2551,21 +2804,25 @@ public class MainActivity extends Activity {
     private void showAccMenu() {
         final Account a = selected();
         if (a == null) return;
-        final java.util.ArrayList<String> items = new java.util.ArrayList<String>();
-        items.add("导入到游戏");
-        if (!a.isBackup()) items.add("重命名");
-        items.add("删除");
-        new AlertDialog.Builder(this)
-                .setTitle(a.isBackup() ? a.name.replace("导入前备份", "备份") : a.name)
-                .setItems(items.toArray(new String[0]), new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        String s = items.get(w);
-                        if (s.startsWith("导入")) doImport();
-                        else if (s.startsWith("重命名")) doRename();
-                        else doDelete();
-                    }
-                })
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, a.isBackup() ? a.name.replace("导入前备份", "备份") : a.name);
+        dlgSub(c, "指纹 " + a.fpShort() + (a.isBackup() ? " · 自动备份" : " · 账号"));
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgMenuItem("导入到游戏", "写进游戏，覆盖当前登录的 key", false, new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doImport(); }
+        }));
+        if (!a.isBackup()) c.addView(dlgMenuItem("重命名", "只改账号库里显示的名字", false, new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doRename(); }
+        }));
+        c.addView(dlgMenuItem("删除", a.isBackup() ? "只删这条备份，导出文件不动" : "从账号库移除，导出文件不动", true, new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); doDelete(); }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, true);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     /** 后台读一次游戏里正在用的 key，算出指纹，用来标记「游戏在用」。 */
@@ -2787,24 +3044,32 @@ public class MainActivity extends Activity {
             showPage(2);
             return;
         }
-        new AlertDialog.Builder(this)
-                .setTitle("把「" + a.name + "」放到其他文件夹")
-                .setItems(new String[]{"复制一份（原来的保留）", "移动过去（删掉原来导出的那份）"},
-                        new android.content.DialogInterface.OnClickListener() {
-                            public void onClick(android.content.DialogInterface d, int w) {
-                                copyTarget = a;
-                                copyMove = (w == 1);
-                                try {
-                                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-                                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-                                    startActivityForResult(i, REQ_TREE_COPY);
-                                } catch (Throwable t) {
-                                    toast("无法打开文件夹选择器");
-                                }
-                            }
-                        })
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "放到其他文件夹");
+        dlgSub(c, "会打开系统的文件夹选择器，选一个目标目录，写进去之后可以随时再用文件管理器挪走。");
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgMenuItem("复制一份", "原来的导出文件保留，目标文件夹里多一份", false, new View.OnClickListener() {
+            public void onClick(View v) {
+                copyTarget = a;
+                copyMove = false;
+                if (h[0] != null) h[0].dismiss();
+                startTreePick();
+            }
+        }));
+        c.addView(dlgMenuItem("移动过去", "写成功后删掉原来导出的那一份", false, new View.OnClickListener() {
+            public void onClick(View v) {
+                copyTarget = a;
+                copyMove = true;
+                if (h[0] != null) h[0].dismiss();
+                startTreePick();
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, true);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     private void doCopyToTree(final android.net.Uri tree, final Account a, final boolean move) {
@@ -2914,24 +3179,31 @@ public class MainActivity extends Activity {
             toast("备份不能重命名");
             return;
         }
-        final EditText et = new EditText(this);
-        et.setInputType(InputType.TYPE_CLASS_TEXT);
-        et.setText(a.name);
-        new AlertDialog.Builder(this)
-                .setTitle("重命名账号")
-                .setView(et)
-                .setPositiveButton("确定", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        String n = et.getText().toString().trim();
-                        if (n.length() > 0) {
-                            a.name = n;
-                            saveVault();
-                            refreshList();
-                        }
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "重命名");
+        dlgSub(c, "只改本机账号库里显示的名字，导出到 Download 的文件名不变。");
+        final EditText et = dlgInput(a.name);
+        et.selectAll();
+        c.addView(et);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("保存", new View.OnClickListener() {
+            public void onClick(View v) {
+                String n = et.getText().toString().trim();
+                if (n.length() > 0) {
+                    a.name = n;
+                    saveVault();
+                    refreshList();
+                    log("[改名] 已改名为 " + n);
+                }
+                if (h[0] != null) h[0].dismiss();
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     private void doDelete() {
@@ -2940,19 +3212,27 @@ public class MainActivity extends Activity {
             toast("请先选中一个账号");
             return;
         }
-        new AlertDialog.Builder(this)
-                .setTitle(a.isBackup() ? "删除这条备份" : "删除账号")
-                .setMessage("确定删除「" + a.name + "」？" + (a.isBackup() ? "已导出的 AuthKey.txt 不会删。" : "此操作不可撤销。"))
-                .setPositiveButton("删除", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        accounts.remove(a);
-                        saveVault();
-                        refreshList();
-                        log("[删除] 已删除 " + a.name);
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, a.isBackup() ? "删除这条备份" : "删除账号");
+        dlgSub(c, "确定删除「" + a.name + "」？" + (a.isBackup() ? "已导出的 AuthKey.txt 不会删。" : "这条记录会从本机账号库消失，导出过的文件仍在原处。"));
+        final AlertDialog[] h = new AlertDialog[1];
+        Button del = dlgPrimary("删除", new View.OnClickListener() {
+            public void onClick(View v) {
+                accounts.remove(a);
+                saveVault();
+                refreshList();
+                log("[删除] 已删除 " + a.name);
+                if (h[0] != null) h[0].dismiss();
+            }
+        });
+        del.setBackground(roundRect(Color.parseColor("#E5484D"), 12, 0, 0));
+        c.addView(del);
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     // ---------- 导出文件夹同步 ----------
@@ -3415,16 +3695,22 @@ public class MainActivity extends Activity {
                 + "游戏里现在用的：指纹 " + now + "\n\n"
                 + "导入前会自动把现在的 key 备份到「备份」分段；万一写入失败，会尝试把原 key 写回去。"
                 + (same ? "\n\n注意：这就是游戏里正在用的账号，导入后不会有任何变化。" : "");
-        new AlertDialog.Builder(this)
-                .setTitle("导入到游戏？")
-                .setMessage(msg)
-                .setPositiveButton("导入", new android.content.DialogInterface.OnClickListener() {
-                    public void onClick(android.content.DialogInterface d, int w) {
-                        doImportNow(a);
-                    }
-                })
-                .setNegativeButton("取消", null)
-                .show();
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "导入到游戏？");
+        dlgSub(c, msg);
+        final AlertDialog[] h = new AlertDialog[1];
+        c.addView(dlgPrimary("导入", new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                doImportNow(a);
+            }
+        }));
+        LinearLayout row = dlgBtnRow();
+        dlgAddGhost(row, "取消", new View.OnClickListener() {
+            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+        }, false);
+        c.addView(row);
+        h[0] = showCard(c);
     }
 
     private void doImportNow(final Account a) {
@@ -3503,16 +3789,22 @@ public class MainActivity extends Activity {
                     public void run() {
                         curFpLoaded = false;
                         refreshCurrentFp();
-                        new AlertDialog.Builder(MainActivity.this)
-                                .setTitle("导入完成")
-                                .setMessage("已写入并校验通过。现在打开游戏就会用「" + a.name + "」登录。")
-                                .setPositiveButton("打开游戏", new android.content.DialogInterface.OnClickListener() {
-                                    public void onClick(android.content.DialogInterface d, int w) {
-                                        launchGame();
-                                    }
-                                })
-                                .setNegativeButton("稍后", null)
-                                .show();
+                        LinearLayout c = dlgCard();
+                        dlgTitle(c, "导入完成");
+                        dlgSub(c, "已写入并校验通过。点「打开游戏」，进去就是「" + a.name + "」这个账号。");
+                        final AlertDialog[] h = new AlertDialog[1];
+                        c.addView(dlgPrimary("打开游戏", new View.OnClickListener() {
+                            public void onClick(View v) {
+                                if (h[0] != null) h[0].dismiss();
+                                launchGame();
+                            }
+                        }));
+                        LinearLayout row = dlgBtnRow();
+                        dlgAddGhost(row, "稍后", new View.OnClickListener() {
+                            public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                        }, false);
+                        c.addView(row);
+                        h[0] = showCard(c);
                     }
                 });
             }
