@@ -70,9 +70,9 @@ class App:
 
         actions = ttk.Frame(self.root, padding=(12, 0, 12, 8))
         actions.pack(fill="x")
-        self.btn_extract = ttk.Button(actions, text="提取 AuthKey 到账号库", style="Big.TButton", command=self.do_extract)
+        self.btn_extract = ttk.Button(actions, text="提取当前账号的 key", style="Big.TButton", command=self.do_extract)
         self.btn_extract.pack(side="left")
-        self.btn_import = ttk.Button(actions, text="把选中账号导入设备", style="Big.TButton", command=self.do_import)
+        self.btn_import = ttk.Button(actions, text="将当前选择的 key 导入到游戏", style="Big.TButton", command=self.do_import)
         self.btn_import.pack(side="left", padx=(10, 0))
         ttk.Button(actions, text="打开游戏", command=self.launch_game).pack(side="left", padx=(10, 0))
 
@@ -111,7 +111,7 @@ class App:
         row.pack(fill="x")
         for text, cmd in (("重命名", self.rename_entry), ("编辑备注", self.edit_note),
                           ("复制 Key", self.copy_key), ("显示 Key", self.show_key),
-                          ("导出到文件夹", self.export_selected_to_dir),
+                          ("把选中的 key 再存一份到文件夹", self.export_selected_to_dir),
                           ("导出 .hak", self.export_hak), ("导入 .hak", self.import_hak),
                           ("删除", self.delete_entry)):
             ttk.Button(row, text=text, command=cmd).pack(side="left", padx=(0, 6))
