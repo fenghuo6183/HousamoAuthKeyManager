@@ -97,14 +97,16 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.18";
+    static final String CURRENT_VER = "1.0.19";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
 
     private TextView tvState;
-    private LinearLayout host, pageHome, pageTask, pageAcc, pageSet;
+    private LinearLayout host;
+    private View pageHome, pageTask, pageAcc, pageSet;
     private TextView tabHome, tabTask, tabAcc, tabSet;
+    private Button btnLock, btnShot, btnNight;
     private TextView rowRootVal, rowGameVal, rowShzkVal, rowPermVal, rowCount, rowSaved, rowSelVal;
     private TextView rowStoreVal, rowResVal, rowOsVal, rowVerVal;
     private TextView rowSvcVal, rowModeVal, rowBatteryVal, rowNotifVal, rowGameVerVal, rowExportVal, rowUpdateVal;
@@ -360,10 +362,10 @@ public class MainActivity extends Activity {
         host.setOrientation(LinearLayout.VERTICAL);
         root.addView(host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        pageHome = buildHome();
-        pageTask = buildTask();
+        pageHome = wrapScroll(buildHome());
+        pageTask = wrapScroll(buildTask());
         pageAcc = buildAccounts();
-        pageSet = buildSettings();
+        pageSet = wrapScroll(buildSettings());
         host.addView(pageHome, full());
         host.addView(pageTask, full());
         host.addView(pageAcc, full());
@@ -377,10 +379,10 @@ public class MainActivity extends Activity {
         nav.setOrientation(LinearLayout.HORIZONTAL);
         nav.setBackgroundColor(c("#FFFFFF"));
         nav.setPadding(0, dp(6), 0, dp(6));
-        tabHome = mkTab("首页");
-        tabTask = mkTab("任务");
-        tabAcc = mkTab("账号");
-        tabSet = mkTab("设置");
+        tabHome = mkTab("首页", R.drawable.ic_home);
+        tabTask = mkTab("任务", R.drawable.ic_task);
+        tabAcc = mkTab("账号", R.drawable.ic_acc);
+        tabSet = mkTab("设置", R.drawable.ic_set);
         tabHome.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) { showPage(0); }
         });
@@ -402,17 +404,38 @@ public class MainActivity extends Activity {
         return root;
     }
 
-    private TextView mkTab(String text) {
+    private TextView mkTab(String text, int icon) {
         TextView t = new TextView(this);
         t.setText(text);
-        t.setTextSize(13);
+        t.setTextSize(10.5f);
         t.setGravity(Gravity.CENTER);
-        t.setPadding(0, dp(8), 0, dp(8));
+        t.setPadding(0, dp(7), 0, dp(5));
+        t.setLineSpacing(0, 1f);
+        try {
+            android.graphics.drawable.Drawable d = getResources().getDrawable(icon);
+            int sz = dp(22);
+            d.setBounds(0, 0, sz, sz);
+            t.setCompoundDrawables(null, d, null, null);
+            t.setCompoundDrawablePadding(dp(3));
+        } catch (Throwable ignored) {
+        }
         return t;
     }
 
     private LinearLayout.LayoutParams weightNav() {
         return new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+    }
+
+    /** 给整页套一层滚动容器：内容比屏幕高时可以滑，不会出现「下面那截永远看不见」。 */
+    private ScrollView wrapScroll(View inner) {
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setVerticalScrollBarEnabled(false);
+        sv.setOverScrollMode(View.OVER_SCROLL_NEVER);
+        sv.setClipToPadding(false);
+        sv.addView(inner, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return sv;
     }
 
     private LinearLayout.LayoutParams full() {
@@ -435,6 +458,9 @@ public class MainActivity extends Activity {
             if (tabs[i] == null) continue;
             tabs[i].setTextColor(idx == i ? on : off);
             tabs[i].setTypeface(null, idx == i ? android.graphics.Typeface.BOLD : android.graphics.Typeface.NORMAL);
+            if (Build.VERSION.SDK_INT >= 23) {
+                tabs[i].setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(idx == i ? on : off));
+            }
         }
         if (idx == 2) {
             curFpLoaded = false;
@@ -484,6 +510,15 @@ public class MainActivity extends Activity {
         return getPreferences(MODE_PRIVATE).getBoolean("noShot", false);
     }
 
+    /** 安全卡片上两行的状态文字 + 按钮文字，状态一变就刷一次。 */
+    private void refreshSec() {
+        boolean lk = lockOn(), ns = noShot();
+        if (rowLockVal != null) rowLockVal.setText(lk ? "已开启：打开 App 要先输密码" : "未开启：打开 App 不需要密码");
+        if (btnLock != null) btnLock.setText(lk ? "关闭" : "开启");
+        if (rowShotVal != null) rowShotVal.setText(ns ? "已禁止：系统截图和录屏是黑的" : "允许：可以正常截图录屏");
+        if (btnShot != null) btnShot.setText(ns ? "关闭" : "开启");
+    }
+
     private void applyShotFlag() {
         try {
             if (noShot()) {
@@ -527,7 +562,7 @@ public class MainActivity extends Activity {
                     verifyPinThen(new Runnable() {
                         public void run() {
                             getPreferences(MODE_PRIVATE).edit().remove("lockPin").apply();
-                            if (rowLockVal != null) rowLockVal.setText("未开启");
+                            refreshSec();
                             toast("应用锁已关闭");
                         }
                     });
@@ -556,7 +591,7 @@ public class MainActivity extends Activity {
                 if (p.length() < 4 || p.length() > 6) { toast("密码要 4-6 位数字"); return; }
                 getPreferences(MODE_PRIVATE).edit().putString("lockPin", pinHash(p)).apply();
                 unlocked = true;
-                if (rowLockVal != null) rowLockVal.setText("已开启");
+                refreshSec();
                 if (h[0] != null) h[0].dismiss();
                 toast("应用锁已开启");
             }
@@ -995,15 +1030,15 @@ public class MainActivity extends Activity {
         LinearLayout perm = card();
         perm.addView(caption("权限"));
         rowPermVal = value(0, "检查中…");
-        perm.addView(rowWith(rowPermVal, "Shizuku 权限", new View.OnClickListener() {
+        perm.addView(rowWithButton(rowPermVal, "Shizuku 权限", "授权", new View.OnClickListener() {
             public void onClick(View v) { askShizuku(); }
         }));
         perm.addView(divider());
-        perm.addView(rowWith(value(0, "点此设置"), "存储权限", new View.OnClickListener() {
+        perm.addView(rowWithButton(value(0, "提取、导出都靠它"), "存储权限", "去设置", new View.OnClickListener() {
             public void onClick(View v) { askStorage(); }
         }));
         perm.addView(divider());
-        perm.addView(rowWith(value(0, "刷新"), "重新检测", new View.OnClickListener() {
+        perm.addView(rowWithButton(value(0, "改完权限点一下"), "重新检测", "刷新", new View.OnClickListener() {
             public void onClick(View v) {
                 pool.execute(new Runnable() {
                     public void run() {
@@ -1021,8 +1056,9 @@ public class MainActivity extends Activity {
 
         LinearLayout look = card();
         look.addView(caption("外观"));
-        rowNightVal = value(0, night() ? "深色" : "浅色");
-        look.addView(rowWith(rowNightVal, "深色模式", new View.OnClickListener() {
+        rowNightVal = value(0, night() ? "当前是深色配色" : "当前是浅色配色");
+        btnNight = mkBtn(night() ? "切到浅色" : "切到深色", true);
+        look.addView(rowWithButtonObj(rowNightVal, "深色模式", btnNight, new View.OnClickListener() {
             public void onClick(View v) { toggleNight(); }
         }));
         TextView lh = new TextView(this);
@@ -1035,20 +1071,34 @@ public class MainActivity extends Activity {
 
         LinearLayout sec = card();
         sec.addView(caption("安全"));
-        rowLockVal = value(0, lockOn() ? "已开启" : "未开启");
-        sec.addView(rowWith(rowLockVal, "应用锁", new View.OnClickListener() {
-            public void onClick(View v) { lockMenu(); }
+        rowLockVal = value(0, "");
+        btnLock = mkBtn(lockOn() ? "关闭" : "开启", true);
+        sec.addView(rowWithButtonObj(rowLockVal, "应用锁", btnLock, new View.OnClickListener() {
+            public void onClick(View v) {
+                if (!lockOn()) { lockMenu(); return; }
+                verifyPinThen(new Runnable() {
+                    public void run() {
+                        getPreferences(MODE_PRIVATE).edit().remove("lockPin").apply();
+                        refreshSec();
+                        toast("应用锁已关闭");
+                        log("[锁] 已关闭应用锁");
+                    }
+                });
+            }
         }));
         sec.addView(divider());
-        rowShotVal = value(0, noShot() ? "已禁止" : "允许");
-        sec.addView(rowWith(rowShotVal, "防止截屏", new View.OnClickListener() {
+        rowShotVal = value(0, "");
+        btnShot = mkBtn(noShot() ? "关闭" : "开启", true);
+        sec.addView(rowWithButtonObj(rowShotVal, "防止截屏", btnShot, new View.OnClickListener() {
             public void onClick(View v) {
                 getPreferences(MODE_PRIVATE).edit().putBoolean("noShot", !noShot()).apply();
                 applyShotFlag();
-                if (rowShotVal != null) rowShotVal.setText(noShot() ? "已禁止" : "允许");
-                toast(noShot() ? "已禁止截屏和录屏" : "已允许截屏");
+                refreshSec();
+                toast(noShot() ? "已禁止截屏和录屏" : "已允许截屏和录屏");
+                log(noShot() ? "[安全] 已开启防截屏" : "[安全] 已关闭防截屏");
             }
         }));
+        refreshSec();
         TextView sech = new TextView(this);
         sech.setText("应用锁是 4-6 位数字密码，忘了只能重装 App（账号文件仍在 Download，不会丢）。防止截屏打开后，系统截图和录屏都会是黑的。");
         sech.setTextSize(11);
@@ -1378,6 +1428,11 @@ public class MainActivity extends Activity {
 
     /** 一行：左边标题 + 右边一个明显的「更改」按钮，路径显示在下面一行。 */
     private LinearLayout rowWithButton(TextView val, String label, String btnText, View.OnClickListener click) {
+        return rowWithButtonObj(val, label, mkBtn(btnText, true), click);
+    }
+
+    /** 和 rowWithButton 一样，但按钮由调用方给，方便之后改字（开启/关闭）。 */
+    private LinearLayout rowWithButtonObj(TextView val, String label, Button b, View.OnClickListener click) {
         LinearLayout r = new LinearLayout(this);
         r.setOrientation(LinearLayout.VERTICAL);
         r.setPadding(dp(2), dp(12), dp(2), dp(12));
@@ -1389,7 +1444,6 @@ public class MainActivity extends Activity {
         l.setTextSize(14);
         l.setTextColor(c("#1B1F24"));
         top.addView(l, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        Button b = mkBtn(btnText, true);
         b.setTextSize(12);
         b.setPadding(dp(16), dp(6), dp(16), dp(6));
         top.addView(b);
