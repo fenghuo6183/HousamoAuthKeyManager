@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.housamo.authkey"
-    android:versionCode="6"
-    android:versionName="1.0.5">
+    android:versionCode="8"
+    android:versionName="1.0.7">
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
@@ -12,6 +12,7 @@
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <queries>
         <package android:name="jp.co.lifewonders.housamo" />
@@ -34,6 +35,12 @@
             android:enabled="true"
             android:exported="true"
             android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+
+        <provider
+            android:name="com.housamo.authkey.ApkProvider"
+            android:authorities="com.housamo.authkey.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <activity
             android:name=".MainActivity"
