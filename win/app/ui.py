@@ -86,7 +86,10 @@ class App:
         # Scale the window with the monitor, but never past the desktop.
         sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
         win_w = min(theme.px(1100), max(theme.px(900), sw - theme.px(40)))
-        win_h = min(theme.px(800), max(theme.px(640), sh - theme.px(90)))
+        # 900 rather than 800: the settings page (appearance + update + data
+        # cards) needs the extra room, otherwise it always relies on the
+        # scroll fallback even on a large screen.
+        win_h = min(theme.px(900), max(theme.px(640), sh - theme.px(90)))
         root.geometry("%dx%d+%d+%d" % (win_w, win_h,
                                        max(0, (sw - win_w) // 2),
                                        max(0, (sh - win_h) // 2)))
@@ -601,7 +604,7 @@ class App:
         label(pref, self, "防止截屏", size=9, color="text_muted").pack(
             side="right", padx=(theme.px(0), theme.px(8)))
         label(pref, self, "系统截图 / 录屏里这个窗口会变黑", size=9, color="text_faint").pack(
-            side="right", padx=(theme.px(14), theme.px(0)))
+            side="right", padx=(theme.px(14), theme.px(10)))
 
         bottom = tk.Frame(body, bg=pal["card"])
         bottom.pack(fill="x", side="bottom", pady=(theme.px(4), theme.px(0)))
