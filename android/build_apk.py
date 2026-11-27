@@ -18,10 +18,10 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
-VERSION_CODE = "18"
-VERSION_NAME = "1.0.17"
+VERSION_CODE = "19"
+VERSION_NAME = "1.0.18"
 MIN_SDK = "24"
-LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar")]
+LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar", "zxing-core.jar")]
 
 ENV = dict(os.environ)
 ENV["JAVA_HOME"] = JDK
