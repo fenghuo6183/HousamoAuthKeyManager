@@ -18,8 +18,8 @@ KS = os.path.join(HERE, "keystore", "release.jks")
 KS_PASS = "housamo2024"
 ALIAS = "housamo"
 APP_NAME = "HousamoAuthKeyManager"
-VERSION_CODE = "10"
-VERSION_NAME = "1.0.9"
+VERSION_CODE = "11"
+VERSION_NAME = "1.0.10"
 MIN_SDK = "24"
 LIBS = [os.path.join(HERE, "libs", n) for n in ("api.jar", "aidl.jar", "shared.jar", "provider.jar", "annotation.jar")]
 
@@ -59,11 +59,25 @@ def main():
     apksigner = os.path.join(BT, "apksigner.bat")
     keytool = os.path.join(JDK, "bin", "keytool.exe")
 
+    # compile resources (launcher icon) into .flat files for aapt2 link
+    flat = []
+    res_dir = os.path.join(HERE, "res")
+    if os.path.isdir(res_dir):
+        res_zip = os.path.join(BUILD, "res.zip")
+        run([aapt2, "compile", "--dir", res_dir, "-o", res_zip])
+        flat_dir = os.path.join(BUILD, "res-flat")
+        with zipfile.ZipFile(res_zip) as z:
+            z.extractall(flat_dir)
+        for dirpath, _, files in os.walk(flat_dir):
+            for f in files:
+                if f.endswith(".flat"):
+                    flat.append(os.path.join(dirpath, f))
+
     base = os.path.join(BUILD, "base.apk")
     run([aapt2, "link", "-o", base, "-I", ANDROID_JAR,
          "--manifest", os.path.join(HERE, "AndroidManifest.xml"),
          "--min-sdk-version", MIN_SDK, "--target-sdk-version", "34",
-         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME])
+         "--version-code", VERSION_CODE, "--version-name", VERSION_NAME] + flat)
 
     srcs = []
     for dirpath, _, files in os.walk(os.path.join(HERE, "src")):
