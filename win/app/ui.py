@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import subprocess
@@ -393,6 +394,8 @@ class App:
                    width=72, height=28, bg="warn_soft").pack(side="right")
         PillButton(self, inner, "存到账号库", command=self.save_reconcile_entry, kind="primary",
                    width=104, height=28).pack(side="right", padx=(theme.px(0), theme.px(8)))
+        PillButton(self, inner, "更新已有账号", command=self.update_reconcile_entry, kind="soft",
+                   width=110, height=28, bg="warn_soft").pack(side="right", padx=(theme.px(0), theme.px(8)))
 
         tree_box = tk.Frame(body, bg=pal["card"])
         self.tree_box = tree_box
@@ -2115,9 +2118,12 @@ class App:
         label(card, self, "指纹 %s · %d 字节" % ((entry.get("fingerprint") or "")[:16], len(raw)),
               size=9, color="text_muted").pack(anchor="w", padx=theme.px(18),
                                                pady=(theme.px(12), theme.px(0)))
-        label(card, self, "别把这个码发给不认识的人——等于把账号交出去。", size=9,
-              color="text_faint").pack(anchor="w", padx=theme.px(18),
-                                       pady=(theme.px(2), theme.px(0)))
+        label(card, self,
+              "发给别人 = 把账号交出去：对方能一直用，你这边没法远程收回。\n"
+              "想让他以后失效：在你自己手机的游戏里改继承码，旧 key 就作废了；\n"
+              "改完你也要在这里把 key 更新一遍，否则会把自己顶下线。",
+              size=9, color="warn", wraplength=image.width, justify="left").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(8), theme.px(0)))
         row = tk.Frame(card, bg=pal["card"])
         row.pack(fill="x", padx=theme.px(18), pady=(theme.px(14), theme.px(16)))
         PillButton(self, row, "另存为 PNG", command=lambda: self.save_qr(entry),
@@ -2183,12 +2189,175 @@ class App:
         if not path:
             return
         try:
-            entry, created = self.vault.import_hak(path)
-            self.refresh_vault()
-            self.vault_tree.selection_set(entry["id"])
-            self.log("账号", ("已导入 " if created else "已存在 ") + entry.get("name", ""))
+            payload, key = self.vault.read_hak(path)
         except Exception as exc:
             messagebox.showerror(APP_TITLE, "导入失败：%s" % exc)
+            return
+        self.show_received(key, payload.get("name") or "导入的账号", payload.get("note", ""))
+
+    def update_reconcile_entry(self):
+        """Game key changed -> point an existing vault entry at the new key."""
+        key = getattr(self, "_reconcile_key", None)
+        if not key:
+            self.reconcile_bar.pack_forget()
+            return
+        entry = self.pick_vault_entry(
+            "把现在这个 key 更新到哪个账号？",
+            "游戏里的 key 变了（改过继承码、重装过都算）。选中原来的账号，"
+            "旧 key 会自动留一份备份。")
+        if not entry:
+            return
+        updated, _backup = self.vault.replace_key(entry["id"], key)
+        if updated is None:
+            messagebox.showwarning(APP_TITLE, "这条账号已经不在库里了，再试一次。")
+            return
+        self.vault_kind = "account"
+        if getattr(self, "kind_seg", None):
+            self.kind_seg.set_active("account")
+        self.refresh_vault()
+        self.reconcile_bar.pack_forget()
+        self._reconcile_key = None
+        self.log("完成", "已把「%s」换成现在的 key（旧 key 存为备份）"
+                         % (updated.get("name") or ""))
+
+    def pick_vault_entry(self, title, hint):
+        """Modal list of account entries; returns the chosen entry or None."""
+        pal = self.pal
+        picked = {"id": None}
+        entries = [e for e in self.vault.entries if e.get("kind", "account") == "account"]
+        if not entries:
+            messagebox.showinfo(APP_TITLE, "账号库里还没有账号，先点「存到账号库」。")
+            return None
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        win.grab_set()
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, title, size=11, color="text").pack(
+            anchor="w", padx=theme.px(16), pady=(theme.px(14), theme.px(2)))
+        label(card, self, hint, size=9, color="text_muted",
+              wraplength=theme.px(420)).pack(anchor="w", padx=theme.px(16),
+                                             pady=(theme.px(0), theme.px(10)))
+        lb = tk.Listbox(card, height=min(10, max(3, len(entries))), activestyle="none",
+                        bg=pal["card_soft"], fg=pal["text"],
+                        selectbackground=pal["accent_soft"], selectforeground=pal["text"],
+                        highlightthickness=0, bd=0, font=theme.font(10))
+        for e in entries:
+            lb.insert("end", "%s  ·  %s" % (e.get("name") or "未命名",
+                                            e.get("fingerprint") or ""))
+        lb.pack(fill="both", expand=True, padx=theme.px(16))
+        lb.selection_set(0)
+
+        def ok(_evt=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            picked["id"] = entries[sel[0]].get("id")
+            win.destroy()
+
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(16), pady=(theme.px(12), theme.px(14)))
+        PillButton(self, row, "更新这个账号", command=ok, kind="primary",
+                   width=128, height=34).pack(side="left")
+        PillButton(self, row, "取消", command=win.destroy, kind="ghost",
+                   width=84, height=34).pack(side="right")
+        lb.bind("<Double-Button-1>", ok)
+        win.geometry("%dx%d" % (theme.px(480), win.winfo_reqheight()))
+        self.root.wait_window(win)
+        return self.vault.get(picked["id"]) if picked["id"] else None
+
+    def show_received(self, key, name, note=""):
+        """Incoming key (.hak now, QR later): strong warning + 5s read gate."""
+        key = bytes(key)
+        digest = hashlib.sha256(key).hexdigest()
+        dup = next((e for e in self.vault.entries if e.get("sha256") == digest), None)
+        same_name = next((e for e in self.vault.entries
+                          if e.get("kind", "account") == "account"
+                          and (e.get("name") or "") == name), None)
+        pal = self.pal
+        win = tk.Toplevel(self.root)
+        win.title("收到一份 key")
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        win.grab_set()
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, "收到一份 key 分享", size=12, color="text").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(16), theme.px(6)))
+        label(card, self,
+              "这是一把长期有效的登录钥匙（AuthKey），给出去就收不回。\n"
+              "想让对方以后失效：在你自己的手机游戏里改继承码，旧 key 就作废了；\n"
+              "改完你也要把这里的 key 更新一遍，否则会把自己顶下线。",
+              size=9, color="warn", wraplength=theme.px(420), justify="left").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(0), theme.px(10)))
+        label(card, self, "%s · 指纹 %s · %d 字节" % (name, digest[:16], len(key)),
+              size=9, color="text_muted").pack(anchor="w", padx=theme.px(18))
+        if dup is not None:
+            label(card, self, "账号库里已经有这个 key：「%s」" % (dup.get("name") or ""),
+                  size=9, color="warn").pack(anchor="w", padx=theme.px(18),
+                                             pady=(theme.px(4), theme.px(0)))
+        replace_target = same_name if (same_name is not None and same_name is not dup) else None
+        primary_text = ("替换「%s」的 key" % (replace_target.get("name") or "")
+                        if replace_target is not None else "存到账号库")
+        holder = {}
+
+        def do_primary():
+            if replace_target is not None:
+                entry, _bak = self.vault.replace_key(replace_target["id"], key)
+                self.log("账号", "已把「%s」更新为新的 key" % (entry.get("name") or ""))
+            else:
+                entry, created = self.vault.add(name=name, key=key, note=note,
+                                                source="hak")
+                self.log("账号", ("已导入 " if created else "已存在 ")
+                                 + (entry.get("name") or ""))
+            win.destroy()
+            self.refresh_vault()
+            try:
+                self.vault_tree.selection_set(entry["id"])
+            except Exception:
+                pass
+
+        def do_second():
+            base = name or "导入的账号"
+            cand, n = base, 2
+            while any((e.get("name") or "") == cand for e in self.vault.entries):
+                cand = "%s (%d)" % (base, n)
+                n += 1
+            entry, _created = self.vault.add(name=cand, key=key, note=note, source="hak")
+            win.destroy()
+            self.refresh_vault()
+            self.log("账号", "已另存为「%s」" % cand)
+
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(18), pady=(theme.px(14), theme.px(16)))
+        btn = PillButton(self, row, "请先读上面的提醒（5 秒）", command=do_primary,
+                         kind="primary", width=170, height=34)
+        btn.set_enabled(False)
+        btn.pack(side="left")
+        btn2 = None
+        if dup is not None or replace_target is not None:
+            btn2 = PillButton(self, row, "另存为新条目", command=do_second,
+                              kind="ghost", width=118, height=34)
+            btn2.set_enabled(False)
+            btn2.pack(side="left", padx=(theme.px(8), 0))
+        PillButton(self, row, "取消", command=win.destroy, kind="ghost",
+                   width=80, height=34).pack(side="right")
+        left = [5]
+
+        def tick():
+            left[0] -= 1
+            if left[0] > 0:
+                btn.set_text("请先读上面的提醒（%d 秒）" % left[0])
+                win.after(1000, tick)
+            else:
+                btn.set_text(primary_text)
+                btn.set_enabled(True)
+                if btn2 is not None:
+                    btn2.set_enabled(True)
+        win.after(1000, tick)
+        win.geometry("%dx%d" % (theme.px(500), win.winfo_reqheight()))
 
     def delete_entry(self):
         entry = self.selected_entry()
