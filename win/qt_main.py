@@ -130,6 +130,8 @@ def main():
         guard.set_capture_guard(shell, True)
 
     start_tray(settings, shell)
+    if settings.get("hotkey"):
+        shell.set_hotkey(True)
 
     if shell.controller is not None:
         shell.controller.boot()

@@ -29,16 +29,16 @@ def _settings_dump():
 
 def system_text(extra=""):
     try:
-        tk_version = str(__import__("tkinter").TkVersion)
+        from PySide6 import __version__ as qt_version
     except Exception:
-        tk_version = "?"
+        qt_version = "?"
     lines = [
         "%s 诊断信息" % theme.APP_TITLE if hasattr(theme, "APP_TITLE") else "诊断信息",
         "时间      : %s" % time.strftime("%Y-%m-%d %H:%M:%S"),
         "版本      : %s" % getattr(theme, "APP_VERSION", "?"),
         "系统      : %s" % platform.platform(),
         "Python    : %s" % sys.version.replace("\n", " "),
-        "Tk        : %s" % tk_version,
+        "Qt        : %s" % qt_version,
         "打包运行  : %s" % ("是" if getattr(sys, "frozen", False) else "否"),
         "程序路径  : %s" % (sys.executable or "?"),
         "数据目录  : %s" % config.app_dir(),

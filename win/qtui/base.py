@@ -157,8 +157,19 @@ def paint_glass(painter, widget, pal, rect, radius, alpha,
     return alpha
 
 
+LOW_MODE = False
+
+
+def set_low_mode(flag):
+    """低配模式：关掉卡片阴影（壁纸模糊由 Shell 负责）。"""
+    global LOW_MODE
+    LOW_MODE = bool(flag)
+
+
 def draw_shadow(painter, rect, radius, color, spread=18, strength=0.30, layers=9):
     """Soft drop shadow drawn as stacked translucent rounded rects."""
+    if LOW_MODE:
+        return
     painter.save()
     painter.setPen(Qt.NoPen)
     for i in range(layers, 0, -1):

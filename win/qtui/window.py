@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import os
 
-from PySide6.QtCore import QRectF, Qt, Signal
+from PySide6.QtCore import QEvent, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPixmap
 from PySide6.QtWidgets import (QApplication, QHBoxLayout, QLabel, QScrollArea,
                                QStackedWidget, QVBoxLayout, QWidget)
@@ -200,17 +200,22 @@ class Shell(QWidget):
         self.settings = settings or config.Settings()
         self.pal = theme.palette(self.settings.get("theme"))
         self.controller = None
+        self.hotkey = None
+        self._quitting = False
+        base.set_low_mode(bool(self.settings.get("low_mode")))
         if live:
             from .controller import Controller
             self.controller = Controller(self.settings, self)
         self.setWindowTitle(theme.APP_NAME)
         self.resize(1100, 900)
         self.setMinimumSize(980, 700)
+        self.setAcceptDrops(True)
 
         self.backdrop = Backdrop(self)
         self.backdrop.setGeometry(self.rect())
         self.backdrop.configure(path=self.settings.get("bg_image"),
-                                blur=self.settings.get("bg_blur"),
+                                blur=0 if self.settings.get("low_mode")
+                                else self.settings.get("bg_blur"),
                                 veil=110, pal=self.pal)
         self.backdrop.lower()
 
@@ -262,6 +267,71 @@ class Shell(QWidget):
         self._quitting = True
         super().closeEvent(event)
         QApplication.quit()
+
+    def changeEvent(self, event):
+        if event.type() == QEvent.WindowStateChange and self.isMinimized():
+            tray = getattr(self, "tray", None)
+            if (tray is not None and getattr(tray, "ok", False)
+                    and self.settings.get("minimize_to_tray")
+                    and not getattr(self, "_quitting", False)):
+                QTimer.singleShot(0, self.hide)
+                if self.settings.get("notify_balloon"):
+                    tray.notify(theme.APP_NAME, "已缩到托盘，双击图标可以打开")
+        super().changeEvent(event)
+
+    # -- appearance / hotkey ------------------------------------------
+    def apply_low_mode(self, flag):
+        """Live switch for low-end machines: no glass blur, no card shadows."""
+        flag = bool(flag)
+        self.settings.set("low_mode", flag)
+        base.set_low_mode(flag)
+        self.backdrop.configure(path=self.settings.get("bg_image"),
+                                blur=0 if flag else self.settings.get("bg_blur"),
+                                veil=110, pal=self.pal)
+        self.backdrop.update()
+        self.update()
+        for card in self._cards:
+            card.update()
+
+    def set_hotkey(self, flag):
+        """Register/unregister Ctrl+Alt+A; returns whether it is active now."""
+        if flag:
+            if self.hotkey is None:
+                from .hotkey import Hotkey
+                self.hotkey = Hotkey(self)
+                self.hotkey.triggered.connect(self.bring_to_front)
+            ok = self.hotkey.register()
+            self.settings.set("hotkey", bool(ok))
+            return ok
+        if self.hotkey is not None:
+            self.hotkey.unregister()
+        self.settings.set("hotkey", False)
+        return False
+
+    def hotkey_active(self):
+        return bool(self.hotkey is not None and self.hotkey.active())
+
+    # -- drag & drop .hak files ---------------------------------------
+    def dragEnterEvent(self, event):
+        for url in event.mimeData().urls():
+            if url.isLocalFile() and url.toLocalFile().lower().endswith(".hak"):
+                event.acceptProposedAction()
+                return
+        super().dragEnterEvent(event)
+
+    def dropEvent(self, event):
+        from app.dnd import HAK_SUFFIXES
+
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        paths = [p for p in paths if p.lower().endswith(HAK_SUFFIXES)]
+        if not paths:
+            super().dropEvent(event)
+            return
+        event.acceptProposedAction()
+        if self.controller is not None:
+            self.bring_to_front()
+            for path in paths:
+                self.controller.import_file(path)
 
     def add_page(self, key, page):
         self.pages.addWidget(page)

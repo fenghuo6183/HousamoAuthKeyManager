@@ -39,6 +39,9 @@ class Controller(QObject):
         self.busy = False
         self.latest_tag = ""
         self.latest_asset = None
+        self._prefetched = ""
+        self._prefetch_tag = ""
+        self._notified_update = ""
         self.current_digest = ""
         self._reconcile_serial = ""
         self._job_done.connect(self._on_job_done, Qt.QueuedConnection)
@@ -50,6 +53,29 @@ class Controller(QObject):
     # -- plumbing ------------------------------------------------------
     def log(self, tag, message):
         self.logged.emit(tag, message)
+
+    def notify(self, title, text):
+        """Desktop notification: tray balloon and/or webhook, per settings."""
+        if self.settings.get("notify_balloon"):
+            shell = self.parent()
+            tray = getattr(shell, "tray", None) if shell is not None else None
+            if tray is not None and getattr(tray, "ok", False):
+                try:
+                    tray.notify(title, text)
+                except Exception:
+                    pass
+        if self.settings.get("notify_webhook"):
+            url = (self.settings.get("webhook_url") or "").strip()
+            if url:
+                from app import notify as notify_mod
+
+                def post():
+                    try:
+                        notify_mod.post_webhook(url, title, text)
+                    except Exception:
+                        pass
+
+                threading.Thread(target=post, daemon=True).start()
 
     def _bg(self, work, done=None):
         if self.busy:
@@ -246,6 +272,8 @@ class Controller(QObject):
             if created:
                 self.log("完成", "已%s：%s" % ("自动备份" if auto else "备份", entry.get("name")))
                 self.state_changed.emit("ok", "备份完成", entry.get("name"))
+                if self.settings.get("notify_on_backup"):
+                    self.notify("备份完成", "%s 已存进账号库" % (entry.get("name") or "AuthKey"))
             else:
                 self.log("备份", "这个 key 已经在账号库里了")
                 self.state_changed.emit("ok", "已连接", serial)
@@ -369,6 +397,13 @@ class Controller(QObject):
             if newer:
                 self.log("更新", "发现新版本 %s" % tag)
                 self.state_changed.emit("ok", "有新版本 %s" % tag, "设置里可以一键更新")
+                if (self.settings.get("auto_download_update")
+                        and self._prefetch_tag != tag):
+                    self._prefetch_update(tag, asset)
+                if (self.settings.get("notify_on_update")
+                        and self._notified_update != tag):
+                    self._notified_update = tag
+                    self.notify("发现新版本", "%s 可以更新了" % (tag or "新版本"))
             else:
                 self.log("更新", "已经是最新版本（%s）" % tag)
 
@@ -376,6 +411,26 @@ class Controller(QObject):
         self._bg(work, done)
 
     # -- reconcile / account parity ------------------------------------
+    def _prefetch_update(self, tag, asset):
+        """Background download so 「立即更新」 only has to stage and relaunch."""
+        if not asset:
+            return
+        self._prefetch_tag = tag
+        url = asset.get("url", "")
+        digest = asset.get("digest", "")
+
+        def work():
+            try:
+                path = updater.download(url, digest, lambda m: self.log("更新", m))
+            except Exception as exc:
+                self.log("更新", "预下载失败：%s" % exc)
+                return
+            self._prefetched = path or ""
+            if path:
+                self.log("更新", "新版本已下载好，点「立即更新」直接安装")
+
+        threading.Thread(target=work, daemon=True).start()
+
     def check_reconcile(self, force=False):
         """Read the key the game is running and tell the UI if it is unknown."""
         if self.service is None or self.busy:
@@ -498,8 +553,12 @@ class Controller(QObject):
         self.state_changed.emit("muted", "正在下载更新…", tag)
 
         def work():
-            zip_path = updater.download(asset.get("url", ""), asset.get("digest", ""),
-                                        lambda m: self.log("更新", m))
+            if self._prefetched and self._prefetch_tag == tag and os.path.isfile(self._prefetched):
+                zip_path = self._prefetched
+                self.log("更新", "用已经下载好的安装包")
+            else:
+                zip_path = updater.download(asset.get("url", ""), asset.get("digest", ""),
+                                            lambda m: self.log("更新", m))
             stage = updater.stage_copy(install, log=lambda m: self.log("更新", m))
             name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) \
                 else "AuthKeyManager.exe"

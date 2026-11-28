@@ -417,6 +417,13 @@ def vault_page(shell):
         actions_row.addWidget(button)
     col.addWidget(actions)
 
+    search = line(pal, "")
+    search.setPlaceholderText("搜索名字或备注")
+    search.setClearButtonEnabled(True)
+    search.setMinimumWidth(160)
+    search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    col.addWidget(search)
+
     kinds = Segmented(pal, ["账号", "备份"], 0, width=180, height=32)
     col.addWidget(kinds)
 
@@ -569,6 +576,11 @@ def vault_page(shell):
     def show_entries():
         clear_rows()
         entries = [e for e in state["entries"] if (e.get("kind") or "account") == state["kind"]]
+        query = (search.text() or "").strip().lower()
+        if query:
+            entries = [e for e in entries
+                       if query in (e.get("name") or "").lower()
+                       or query in (e.get("note") or "").lower()]
         count.setText("%d 条" % len(entries) if entries else "")
         if not entries:
             empty_state()
@@ -581,6 +593,7 @@ def vault_page(shell):
         show_entries()
 
     kinds.changed.connect(on_kind)
+    search.textChanged.connect(lambda _text: show_entries())
 
     def rebuild(entries):
         state["entries"] = list(entries or [])
@@ -942,6 +955,150 @@ def _connect_section(shell, page):
     page.add(panel)
 
 
+def _start_section(shell, page):
+    pal = shell.pal
+    settings = shell.settings
+    ctrl = getattr(shell, "controller", None)
+
+    panel, col = card(shell, head=page.head)
+
+    def log(message, tag="提示"):
+        if ctrl is not None:
+            ctrl.log(tag, message)
+
+    close_tray = Toggle(pal, bool(settings.get("close_to_tray")))
+    close_tray.toggled.connect(lambda checked: settings.set("close_to_tray", bool(checked)))
+    col.addWidget(Field(pal, "关闭时收进托盘", close_tray, "没开托盘图标时不起作用"))
+
+    min_tray = Toggle(pal, bool(settings.get("minimize_to_tray")))
+    min_tray.toggled.connect(lambda checked: settings.set("minimize_to_tray", bool(checked)))
+    col.addWidget(Field(pal, "最小化时收进托盘", min_tray, "最小化后从托盘叫回"))
+
+    from app import autostart
+
+    boot = Toggle(pal, False)
+    try:
+        boot.blockSignals(True)
+        boot.setChecked(bool(autostart.enabled()))
+        boot.blockSignals(False)
+    except Exception:
+        boot.setEnabled(False)
+
+    def on_boot(checked):
+        try:
+            autostart.set_enabled(bool(checked))
+            log("开机自启已%s" % ("开启" if checked else "关闭"))
+        except Exception as exc:
+            log("开机自启设置失败：%s" % exc, "失败")
+            boot.blockSignals(True)
+            boot.setChecked(not checked)
+            boot.blockSignals(False)
+
+    boot.toggled.connect(on_boot)
+    col.addWidget(Field(pal, "开机自启", boot, "登录 Windows 后自动启动"))
+
+    low = Toggle(pal, bool(settings.get("low_mode")))
+
+    def on_low(checked):
+        if hasattr(shell, "apply_low_mode"):
+            shell.apply_low_mode(bool(checked))
+        log("低配模式已%s" % ("开启" if checked else "关闭"))
+
+    low.toggled.connect(on_low)
+    col.addWidget(Field(pal, "低配模式", low, "关壁纸模糊和卡片阴影"))
+
+    hot = Toggle(pal, bool(shell.hotkey_active()))
+
+    def on_hot(checked):
+        ok = shell.set_hotkey(bool(checked)) if hasattr(shell, "set_hotkey") else False
+        if checked and not ok:
+            log("热键注册失败，可能被别的程序占用了", "失败")
+            hot.blockSignals(True)
+            hot.setChecked(False)
+            hot.blockSignals(False)
+            return
+        log("全局热键已%s" % ("开启" if checked else "关闭"))
+
+    hot.toggled.connect(on_hot)
+    col.addWidget(Field(pal, "全局热键", hot, "Ctrl+Alt+A 随时呼出窗口"))
+    page.add(panel)
+
+
+def _notify_section(shell, page):
+    pal = shell.pal
+    settings = shell.settings
+    ctrl = getattr(shell, "controller", None)
+    from app import notify as notify_mod
+
+    panel, col = card(shell, head=page.head)
+
+    def log(message, tag="提示"):
+        if ctrl is not None:
+            ctrl.log(tag, message)
+
+    balloon = Toggle(pal, bool(settings.get("notify_balloon")))
+    balloon.toggled.connect(lambda checked: settings.set("notify_balloon", bool(checked)))
+    col.addWidget(Field(pal, "托盘气泡", balloon, "备份完成时弹一条系统通知"))
+
+    backup_tip = Toggle(pal, bool(settings.get("notify_on_backup")))
+    backup_tip.toggled.connect(lambda checked: settings.set("notify_on_backup", bool(checked)))
+    col.addWidget(Field(pal, "备份完成提醒", backup_tip, "没开气泡时只写运行日志"))
+
+    update_tip = Toggle(pal, bool(settings.get("notify_on_update")))
+    update_tip.toggled.connect(lambda checked: settings.set("notify_on_update", bool(checked)))
+    col.addWidget(Field(pal, "新版本提醒", update_tip, "每发现一个新版本提醒一次"))
+
+    web = Toggle(pal, bool(settings.get("notify_webhook")))
+
+    def on_web(checked):
+        settings.set("notify_webhook", bool(checked))
+        log("网页通知已%s" % ("开启" if checked else "关闭"))
+
+    web.toggled.connect(on_web)
+
+    url = line(pal, settings.get("webhook_url") or "")
+    url.setPlaceholderText("https://… 收到 JSON 的地址")
+    url.setMinimumWidth(200)
+    url.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    test_btn = PillButton(pal, "发测试", "ghost", height=32, min_width=76)
+    url_row = QWidget()
+    url_box = QHBoxLayout(url_row)
+    url_box.setContentsMargins(0, 0, 0, 0)
+    url_box.setSpacing(8)
+    url_box.addWidget(url, 1)
+    url_box.addWidget(test_btn)
+
+    def save_url():
+        settings.set("webhook_url", url.text().strip())
+
+    def do_test():
+        target = url.text().strip()
+        if not target:
+            log("先填 Webhook 地址", "失败")
+            return
+        settings.set("webhook_url", target)
+        if ctrl is None or not hasattr(ctrl, "_bg"):
+            return
+
+        def work():
+            return notify_mod.post_webhook(target, "东放 AuthKey 管家", "这是一条测试通知")
+
+        def done(result):
+            ok, detail = result if isinstance(result, tuple) else (False, str(result))
+            if ok:
+                log("测试通知已发出：%s" % (detail or "OK"))
+            else:
+                log("测试通知失败：%s" % detail, "失败")
+
+        ctrl._bg(work, done)
+
+    url.editingFinished.connect(save_url)
+    test_btn.clicked.connect(lambda _=False: do_test())
+    col.addWidget(Field(pal, "网页通知", web, "把提醒 POST 到自己的地址"))
+    col.addWidget(Field(pal, "Webhook 地址", url_row, "支持 http(s)，失败只记日志", expand=True))
+    page.add(panel)
+
+
 def _look_section(shell, page):
     pal = shell.pal
     settings = shell.settings
@@ -1062,6 +1219,30 @@ def _update_section(shell, page):
     check_toggle.toggled.connect(on_auto_check)
     col.addWidget(Field(pal, "自动检查更新", check_toggle, "启动时检查一次"))
 
+    source_values = ["auto", "github", "mirror"]
+    source = Segmented(pal, ["自动", "GitHub", "镜像"], 0, width=260, height=34)
+    try:
+        source.set_index(source_values.index(settings.get("update_source") or "auto"))
+    except ValueError:
+        pass
+
+    def on_source(index):
+        settings.set("update_source", source_values[index])
+        if ctrl is not None:
+            ctrl.log("更新", "更新源：%s" % ["自动", "GitHub", "镜像"][index])
+
+    source.changed.connect(on_source)
+    col.addWidget(Field(pal, "更新源", source, "GitHub 慢时自动走镜像"))
+
+    auto_download = Toggle(pal, bool(settings.get("auto_download_update")))
+
+    def on_auto_download(checked):
+        settings.set("auto_download_update", bool(checked))
+
+    auto_download.toggled.connect(on_auto_download)
+    col.addWidget(Field(pal, "自动下载新版本", auto_download,
+                        "先在后台下好，装时再确认"))
+
     check_btn = PillButton(pal, "立即检查", "ghost", height=36, min_width=104)
     version = muted(pal, "当前版本 %s" % theme.APP_VERSION, 9.5, "text_faint")
     result = muted(pal, "还没检查过", 9.5, "text_faint")
@@ -1129,6 +1310,14 @@ def _data_section(shell, page):
     folder.setCursorPosition(0)
     col.addWidget(Field(pal, "保存目录", folder, "账号库、壁纸和设置都放在这里", expand=True))
 
+    vault_path = ""
+    if ctrl is not None and getattr(ctrl, "service", None) is not None:
+        vault_path = getattr(ctrl.service.vault, "path", "")
+    game_name = GAME_LABELS.get(settings.get("active_game") or "housamo", "Housamo")
+    vault_text = muted(pal, "%s · %s" % (game_name, vault_path or "还没建库"), 9, "text_faint")
+    vault_text.setToolTip(vault_path or "")
+    col.addWidget(Field(pal, "当前游戏库", vault_text, "切游戏后这里会跟着换"))
+
     from app import bulk as bulk_mod
     save_dir = line(pal, settings.get("save_dir") or "")
     save_dir.setPlaceholderText("选一个保存文件夹")
@@ -1194,6 +1383,89 @@ def _data_section(shell, page):
     hours.currentIndexChanged.connect(on_hours)
     col.addWidget(Field(pal, "自动备份", auto_row, "程序开着时到点自动备份一次，没设备就跳过"))
 
+    try:
+        last_ts = float(settings.get("last_backup_at") or 0)
+    except (TypeError, ValueError):
+        last_ts = 0.0
+    last_text = muted(pal, (time.strftime("%Y-%m-%d %H:%M", time.localtime(last_ts))
+                            if last_ts else "还没备份过"), 9.5, "text_faint")
+    backup_now = PillButton(pal, "立即备份", "ghost", height=32, min_width=88)
+    last_row = QWidget()
+    last_box = QHBoxLayout(last_row)
+    last_box.setContentsMargins(0, 0, 0, 0)
+    last_box.setSpacing(10)
+    last_box.addWidget(last_text)
+    last_box.addStretch(1)
+    last_box.addWidget(backup_now)
+
+    def do_backup_now():
+        if ctrl is not None:
+            ctrl.backup()
+
+    backup_now.clicked.connect(lambda _=False: do_backup_now())
+    col.addWidget(Field(pal, "上次备份", last_row, "手动备份和自动备份都会更新", expand=True))
+
+    history = muted(pal, "", 9, "text_faint")
+    history.setWordWrap(True)
+    undo_last = PillButton(pal, "撤销上次导入", "ghost", height=32, min_width=104)
+    history_row = QWidget()
+    history_box = QHBoxLayout(history_row)
+    history_box.setContentsMargins(0, 0, 0, 0)
+    history_box.setSpacing(10)
+    history_box.addWidget(history, 1)
+    history_box.addWidget(undo_last)
+
+    def game_key():
+        if ctrl is not None and getattr(ctrl, "service", None) is not None:
+            return ctrl.service.game.id
+        return settings.get("active_game") or "housamo"
+
+    def refresh_imports(*_args):
+        items = bulk_mod.import_history(settings, game_key(), 5)
+        if items:
+            rows = ["%s  %s" % (item.get("at", ""), item.get("name", "")) for item in items]
+            history.setText("最近导入：\n" + "\n".join(rows))
+        else:
+            history.setText("还没有导入记录")
+        undo_last.setEnabled(bool(items))
+
+    def do_undo_import():
+        last = bulk_mod.last_import(settings, game_key())
+        if not last:
+            log("还没有导入记录", "提示")
+            return
+        entry_id = last.get("entry_id") or ""
+        entry = None
+        if ctrl is not None and getattr(ctrl, "service", None) is not None and entry_id:
+            try:
+                entry = ctrl.service.vault.get(entry_id)
+            except Exception:
+                entry = None
+        if entry is None:
+            bulk_mod.forget_import(settings, game_key())
+            refresh_imports()
+            log("那条账号已经不在库里，清掉了导入记录")
+            return
+        if not dialogs.confirm(panel, pal, "撤销上次导入",
+                               "把「%s」从本机账号库里移除？\n\n只删这一份记录，设备上的 key 不受影响。"
+                               % (entry.get("name") or ""), ok_text="移除", danger=True):
+            return
+        bulk_mod.forget_import(settings, game_key())
+        if ctrl is not None:
+            ctrl.delete_entry(entry_id)
+        log("已撤销上次导入：%s" % (entry.get("name") or ""))
+
+    def log(message, tag="提示"):
+        if ctrl is not None:
+            ctrl.log(tag, message)
+
+    undo_last.clicked.connect(lambda _=False: do_undo_import())
+    if ctrl is not None:
+        ctrl.vault_changed.connect(refresh_imports)
+        ctrl.game_changed.connect(refresh_imports)
+    refresh_imports()
+    col.addWidget(Field(pal, "导入记录", history_row, "导入过的最近 5 条", expand=True))
+
     keep = Segmented(pal, ["全部保留", "最近 10 份", "最近 30 天"],
                      0, width=300, height=34)
     keep_values = ["all", "10", "30d"]
@@ -1255,6 +1527,42 @@ def _data_section(shell, page):
     copy_box.addStretch(1)
     col.addWidget(data_row)
     col.addWidget(copy_row)
+
+    diag_btn = PillButton(pal, "生成诊断包", "ghost", height=32, min_width=104)
+    diag_row = QWidget()
+    diag_box = QHBoxLayout(diag_row)
+    diag_box.setContentsMargins(0, 0, 0, 0)
+    diag_box.setSpacing(10)
+    diag_box.addWidget(diag_btn)
+    diag_box.addStretch(1)
+
+    def do_diag():
+        from app import diag as diag_mod
+        from app import logfile as logfile_mod
+
+        dest = os.path.join(logfile_mod.log_dir(), "diagnostics.zip")
+        online = 0
+        if ctrl is not None and getattr(ctrl, "service", None) is not None:
+            try:
+                online = sum(1 for dev in (ctrl.service.devices or []) if dev.online)
+            except Exception:
+                online = 0
+        extra = "在线设备：%d" % online
+        if ctrl is None or not hasattr(ctrl, "_bg"):
+            return
+
+        def done(result):
+            ok, detail = result if isinstance(result, tuple) else (False, str(result))
+            if not ok:
+                log("诊断包生成失败：%s" % detail, "失败")
+                return
+            QApplication.clipboard().setText(detail)
+            log("诊断包已生成，路径已复制：%s" % detail)
+
+        ctrl._bg(lambda: diag_mod.build_bundle(dest, extra=extra), done)
+
+    diag_btn.clicked.connect(lambda _=False: do_diag())
+    col.addWidget(Field(pal, "诊断", diag_row, "打包日志和设置，方便排查问题"))
 
     def do_clear_vault():
         first = dialogs.confirm(
@@ -1451,8 +1759,10 @@ class _SettingsPage(QWidget):
         self.buttons = []
         sections = (
             ("connect", "连接设置", "连接设置", "设备、端口和记住的设备", _connect_section),
+            ("start", "启动设置", "启动设置", "托盘、自启和全局热键", _start_section),
             ("look", "外观设置", "外观设置", "壁纸、透明度和主题", _look_section),
-            ("update", "更新设置", "更新设置", "检查新版本", _update_section),
+            ("notify", "通知设置", "通知设置", "备份提醒与网页通知", _notify_section),
+            ("update", "更新设置", "更新设置", "检查并下载新版本", _update_section),
             ("data", "数据与存储", "数据与存储", "账号库和日志放在哪里", _data_section),
             ("security", "安全设置", "安全设置", "应用锁与防截屏", _security_section),
             ("about", "关于我们", "关于我们", "版本与项目主页", _about_section),
