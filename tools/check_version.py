@@ -15,7 +15,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def read(rel):
-    return io.open(os.path.join(ROOT, rel), encoding="utf-8").read()
+    with io.open(os.path.join(ROOT, rel), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def find(pattern, text, what):

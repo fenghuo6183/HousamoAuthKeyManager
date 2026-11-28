@@ -48,7 +48,12 @@ class SimpleTasksPageTest(unittest.TestCase):
         specs = self.app.pages["tasks"]
         self.assertEqual(len(specs), 2)
         self.assertIsNotNone(specs[0][1], "action card keeps its own height")
-        self.assertIsNone(specs[1][1], "recent imports fill the rest")
+        # 最近导入有高度上限，下面留出壁纸（玻璃外壳的观感要求）。
+        self.assertIsNotNone(specs[1][1], "recent imports keep a bounded height")
+        self.app._show_page("tasks")
+        self.root.update()
+        self.assertLessEqual(self.app._recent_card.winfo_height(),
+                             theme.px(330) + theme.px(24))
 
     def test_device_selector_is_a_readonly_dropdown(self):
         self.assertIsInstance(self.app.device_list.combo, ttk.Combobox)

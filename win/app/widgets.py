@@ -101,14 +101,57 @@ class RoundCard(tk.Canvas):
         self.fill = fill
         self.shadow = shadow
         self.border = border
+        # 卡片“通透”时这两个由 App._paint_card 改写成带壁纸色的版本
+        self.fill_color = app.pal[fill]
+        self.border_color = app.pal[border]
+        self.alpha = 255
+        self.face_mix = 0.0
         self._photo = None
         self._img_id = None
         self._box = (0, 0, 1, 1)
         self._key = None
         self.body = tk.Frame(self, bg=app.pal[fill], bd=0, highlightthickness=0)
+        # 卡片"通透"时铺在内容底下的一层壁纸。行底都是按自己位置取的纯色，
+        # 只有垫上和取色用的同一张图，行与行之间的缝才不是一条条硬边。
+        self._body_bg = tk.Label(self.body, bd=0, padx=0, pady=0,
+                                 highlightthickness=0, bg=app.pal[fill])
+        self._body_bg._glass_bg = True
+        self._body_bg.place(x=0, y=0, relwidth=1, relheight=1)
+        self._body_bg.lower()
+        self._body_photo = None
         inset = self.margin + self.pad
         self._win = self.create_window(inset, inset, window=self.body, anchor="nw")
         app.cards.append(self)
+
+    def _paint_body_bg(self):
+        """Fill the content area with the same frosted crop the rows sample."""
+        if self.face_mix <= 0.01 or not bgfx.PIL_OK or ImageTk is None:
+            if self._body_photo is not None:
+                self._body_photo = None
+                try:
+                    self._body_bg.configure(image="")
+                except Exception:
+                    pass
+            return
+        x, y, width, height = self._box
+        inset = self.margin + self.pad
+        box = (x + inset, y + inset, width - 2 * inset, height - 2 * inset)
+        if box[2] < 4 or box[3] < 4:
+            return
+        extra = getattr(self, "face_extra", None)
+        if extra is None:
+            extra = getattr(self.app, "glass_extra", None)
+        try:
+            patch = self.app.backdrop.patch(
+                (self.app.canvas.winfo_width(), self.app.canvas.winfo_height()),
+                box, extra, bool(getattr(self.app, "glass_flat", False)))
+            if patch is None:
+                return
+            self._body_photo = ImageTk.PhotoImage(patch)
+            self._body_bg.configure(image=self._body_photo)
+            self._body_bg.lower()
+        except Exception:
+            pass
 
     def required_height(self):
         """Outer height the card needs so no packed row gets clipped.
@@ -130,12 +173,12 @@ class RoundCard(tk.Canvas):
             self.place(x=x, y=y, width=width, height=height)
             return
         if (self._photo is not None and self._key is not None
-                and box[0] == self._box[0] and box[2:] == self._box[2:]
-                and abs(box[1] - self._box[1]) <= theme_mod.px(32)):
-            # One scroll notch: move the painted card. Only the 8px shadow
-            # ring shows the wallpaper, and the app repaints it as soon as
-            # the wheel settles, so repainting every card here is wasted
-            # work that made the wheel feel stuck.
+                and box[0] == self._box[0] and box[2:] == self._box[2:]):
+            # Vertical move only (a wheel notch): slide the painted card
+            # instead of repainting it. Only the 8px shadow ring shows the
+            # wallpaper, and the app repaints every card as soon as the wheel
+            # settles, so repainting here is wasted work that made the wheel
+            # feel stuck -- and on a tall card it cost a full render per notch.
             self._box = box
             self.place(x=x, y=y, width=width, height=height)
             return
@@ -151,21 +194,31 @@ class RoundCard(tk.Canvas):
         self.itemconfigure(self._win, width=max(1, width - 2 * inset),
                            height=max(1, height - 2 * inset))
         if not bgfx.PIL_OK or ImageTk is None:
-            self.configure(bg=self.app.pal[self.fill])
+            self.configure(bg=self.fill_color)
             return
+        self.body.configure(bg=self.fill_color)
         key = (self._box, self.app.canvas.winfo_width(),
                self.app.canvas.winfo_height(),
                getattr(self.app.backdrop, "rev", 0), id(self.app.pal),
-               self.fill, self.border, self.shadow, self.radius, self.margin)
+               self.fill_color, self.border_color, self.alpha,
+               self.shadow, self.radius, self.margin, round(self.face_mix, 3))
+        # 卡片内部那块壁纸必须和逐行取色用同一档模糊，否则行色和缝隙里的图
+        # 对不上，每行的边就成了一条硬线
+        face_extra = getattr(self, "face_extra", None)
+        if face_extra is None:
+            face_extra = getattr(self.app, "glass_extra", None)
+        face_flat = bool(getattr(self.app, "glass_flat", False))
         if not force and key == self._key and self._photo is not None:
             return
         try:
             img = self.app.backdrop.card_image(
                 (self.app.canvas.winfo_width(), self.app.canvas.winfo_height()),
-                self._box, self.radius, self.app.pal[self.fill],
-                self.app.pal[self.border], self.margin, self.shadow)
+                self._box, self.radius, self.fill_color,
+                self.border_color, self.margin, self.shadow, self.alpha,
+                self.face_mix, face_extra, face_flat)
             self._photo = ImageTk.PhotoImage(img)
             self._key = key
+            self._paint_body_bg()
             if self._img_id is None:
                 self._img_id = self.create_image(0, 0, anchor="nw", image=self._photo,
                                                  tags=("cardbg",))
@@ -265,14 +318,20 @@ class PillButton(tk.Canvas):
         return super().configure(cnf, **kwargs)
 
     # -- internals ---------------------------------------------------
+    def _pal(self):
+        # 卡片通透时 App 会给这张卡挂一份玻璃版调色板，悬停重画也用它，
+        # 否则鼠标一移上去按钮就变回纯白。
+        return getattr(self, "glass_pal", None) or self.app.pal
+
     def _palette(self):
+        pal = self._pal()
         spec = self.KINDS.get(self.kind, self.KINDS["primary"])
         if not self._enabled:
-            return self.app.pal["glyph_off"], self.app.pal["glyph_off_line"], None
+            return pal["glyph_off"], pal["glyph_off_line"], None
         key = {"normal": "fill", "hover": "hover", "press": "press"}.get(self._state, "fill")
-        fill = self.app.pal[spec[key]]
-        fg = self.app.pal[spec["text"]]
-        border = self.app.pal[spec["border"]] if spec["border"] else None
+        fill = pal[spec[key]]
+        fg = pal[spec["text"]]
+        border = pal[spec["border"]] if spec["border"] else None
         return fill, fg, border
 
     def _render(self):
@@ -348,18 +407,22 @@ class NavButton(tk.Canvas):
         self.active = bool(active)
         self._render()
 
+    def _pal(self):
+        return getattr(self, "glass_pal", None) or self.app.pal
+
     def _render(self):
+        pal = self._pal()
         if self.active:
-            fill = self.app.pal["accent_soft"]
-            fg = self.app.pal["accent"]
+            fill = pal["accent_soft"]
+            fg = pal["accent"]
             weight = "bold"
         elif self._hover:
-            fill = self.app.pal["rail_hover"]
-            fg = self.app.pal["text"]
+            fill = pal["rail_hover"]
+            fg = pal["text"]
             weight = "normal"
         else:
-            fill = self.app.pal["rail"]
-            fg = self.app.pal["text_muted"]
+            fill = str(self.cget("bg")) if getattr(self, "glass_pal", None) else pal["rail"]
+            fg = pal["text_muted"]
             weight = "normal"
         self.delete("all")
         photo = None
@@ -384,6 +447,266 @@ class NavButton(tk.Canvas):
                                   fill=self.app.pal["accent"], outline="")
         else:
             self.configure(cursor="hand2")
+
+
+
+class SubNav(tk.Canvas):
+    """Settings sub-navigation: a text pill with a left accent bar when active."""
+
+    def __init__(self, app, master, text, command, width=124, height=36):
+        width = theme_mod.px(width)
+        height = theme_mod.px(height)
+        super().__init__(master, width=width, height=height, bg=app.pal["card"],
+                         highlightthickness=0, bd=0, takefocus=0)
+        self.app = app
+        self.text = text
+        self.command = command
+        self._width = width
+        self._height = height
+        self.active = False
+        self._hover = False
+        self._photos = {}
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", lambda e: self.command())
+        self.bind("<Configure>", self._on_configure)
+        self._render()
+
+    def _on_configure(self, _event):
+        if self.winfo_width() > 1 and self.winfo_width() != self._width:
+            self._width = self.winfo_width()
+            self._render()
+
+    def _on_enter(self, _event):
+        self._hover = True
+        self._render()
+        self.configure(cursor="hand2")
+
+    def _on_leave(self, _event):
+        self._hover = False
+        self._render()
+
+    def set_active(self, active):
+        self.active = bool(active)
+        self._render()
+
+    def _render(self):
+        pal = getattr(self, "glass_pal", None) or self.app.pal
+        if self.active:
+            fill, fg, weight = pal["accent_soft"], pal["accent"], "bold"
+        elif self._hover:
+            fill, fg, weight = pal["rail_hover"], pal["text"], "normal"
+        else:
+            fill = str(self.cget("bg")) if getattr(self, "glass_pal", None) else pal["card"]
+            fg, weight = pal["text_muted"], "normal"
+        self.delete("all")
+        photo = None
+        if bgfx.PIL_OK and ImageTk is not None:
+            key = (fill, self._width, self._height)
+            if key not in self._photos:
+                img = bgfx.rounded_rgba(self._width, self._height, theme_mod.px(8),
+                                        theme_mod.hex_to_rgb(fill) + (255,), scale=2)
+                self._photos[key] = ImageTk.PhotoImage(img)
+            photo = self._photos[key]
+        if photo is not None:
+            self.create_image(0, 0, anchor="nw", image=photo)
+        else:
+            self.configure(bg=fill)
+            self.create_rectangle(0, 0, self._width, self._height, fill=fill, outline="")
+        self.create_text(theme_mod.px(14), self._height // 2, text=self.text, anchor="w",
+                         font=theme_mod.font(10, weight), fill=fg)
+        if self.active:
+            self.create_rectangle(0, theme_mod.px(9), theme_mod.px(3),
+                                  self._height - theme_mod.px(9),
+                                  fill=pal["accent"], outline="")
+        else:
+            self.configure(cursor="hand2")
+
+
+class CheckToggle(tk.Canvas):
+    """MAA-style checkbox: a rounded square that fills with a tick when on.
+
+    Keeps Segmented's select("on"/"off") spelling so the existing handlers
+    and tests keep working after the switch control changed shape.
+    """
+
+    def __init__(self, app, master, value=False, command=None, bg="card",
+                 box=22, text=""):
+        self.app = app
+        self.command = command
+        self.bg_name = bg
+        box = theme_mod.px(box)
+        extra = theme_mod.px(8) + (len(text) * theme_mod.px(9) if text else 0)
+        super().__init__(master, width=box + extra, height=box, bg=app.pal[bg],
+                         highlightthickness=0, bd=0, takefocus=0)
+        self.value = bool(value)
+        self.box = box
+        self.text = text
+        self._enabled = True
+        self._photos = {}
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", lambda _e: self.configure(cursor="hand2"))
+        self.bind("<Leave>", lambda _e: self.configure(cursor=""))
+        self._render()
+
+    def _on_click(self, _event=None):
+        if not self._enabled:
+            return
+        self.set(not self.value)
+        if self.command:
+            self.command(self.key())
+
+    def key(self):
+        return "on" if self.value else "off"
+
+    def get(self):
+        return self.value
+
+    def set(self, value, notify=False):
+        self.value = bool(value)
+        self._render()
+        if notify and self.command:
+            self.command(self.key())
+
+    def select(self, value):
+        """Segmented-compatible: accept "on"/"off" or a truthy value."""
+        if isinstance(value, str):
+            on = value.strip().lower() in ("on", "true", "1", "yes")
+        else:
+            on = bool(value)
+        self.set(on)
+        if self.command:
+            self.command(self.key())
+
+    def set_enabled(self, enabled):
+        self._enabled = bool(enabled)
+        self._render()
+
+    def set_text(self, text):
+        self.text = text
+        self._render()
+
+    def _render(self):
+        pal = getattr(self, "glass_pal", None) or self.app.pal
+        on = self.value
+        box = self.box
+        self.delete("all")
+        photo = None
+        key = (on, self._enabled)
+        if bgfx.PIL_OK and ImageTk is not None:
+            if key not in self._photos:
+                fill = pal["accent"] if on else pal["card"]
+                border = pal["accent"] if on else pal["check_border"]
+                if not self._enabled:
+                    fill, border = pal["card_soft"], pal["border_soft"]
+                img = bgfx.rounded_rgba(box, box, theme_mod.px(6),
+                                        theme_mod.hex_to_rgb(fill) + (255,),
+                                        outline=theme_mod.hex_to_rgb(border) + (255,),
+                                        scale=3)
+                self._photos[key] = ImageTk.PhotoImage(img)
+            photo = self._photos[key]
+        if photo is not None:
+            self.create_image(0, 0, anchor="nw", image=photo)
+        else:
+            self.configure(bg=pal[self.bg_name])
+            self.create_rectangle(0, 0, box, box, fill=pal["card"],
+                                  outline=pal.get("check_border", pal["border"]))
+        if on:
+            ink = pal["on_accent"]
+            w = max(1, theme_mod.px(2))
+            self.create_line(box * 0.26, box * 0.53, box * 0.44, box * 0.71,
+                             box * 0.75, box * 0.31, fill=ink, width=w,
+                             capstyle="round", joinstyle="round")
+        if self.text:
+            self.create_text(box + theme_mod.px(8), box // 2, text=self.text,
+                             anchor="w", font=theme_mod.font(10),
+                             fill=pal["text"] if self._enabled else pal["text_faint"])
+
+
+class HelpTip(tk.Label):
+    """The little "?" badge MAA puts next to settings that need explaining."""
+
+    def __init__(self, master, app, text, bg="card"):
+        super().__init__(master, text="?", font=theme_mod.font(8, "bold"),
+                         fg=app.pal["text_faint"], bg=app.pal[bg],
+                         width=2, bd=0, highlightthickness=0, takefocus=0)
+        self.app = app
+        self.tip_text = text
+        self._win = None
+        self.bind("<Enter>", self._show_tip)
+        self.bind("<Leave>", self._hide_tip)
+        self.bind("<Button-1>", lambda _e: self._show_tip())
+
+    def _show_tip(self, _event=None):
+        if self._win is not None:
+            return
+        pal = self.app.pal
+        win = tk.Toplevel(self)
+        win.wm_overrideredirect(True)
+        win.configure(bg=pal["border"])
+        try:
+            win.attributes("-topmost", True)
+        except Exception:
+            pass
+        inner = tk.Frame(win, bg=pal["card"])
+        inner.pack(padx=1, pady=1)
+        tk.Label(inner, text=self.tip_text, font=theme_mod.font(9),
+                 fg=pal["text"], bg=pal["card"], justify="left",
+                 wraplength=theme_mod.px(260), padx=theme_mod.px(10),
+                 pady=theme_mod.px(7)).pack()
+        win.update_idletasks()
+        x = self.winfo_rootx() + self.winfo_width()
+        y = self.winfo_rooty() + self.winfo_height() + theme_mod.px(4)
+        win.wm_geometry("+%d+%d" % (x, y))
+        self._win = win
+
+    def _hide_tip(self, _event=None):
+        if self._win is not None:
+            try:
+                self._win.destroy()
+            except Exception:
+                pass
+            self._win = None
+
+
+class SettingRow(tk.Frame):
+    """One settings row: title (and a muted hint) on the left, control right."""
+
+    def __init__(self, app, master, title, hint="", help_text="", bg="card",
+                 pad_top=14, hint_wrap=430, right_expand=False):
+        pal = app.pal
+        super().__init__(master, bg=pal[bg])
+        self.app = app
+        self.bg_name = bg
+        self.pad_top = pad_top
+        self.right_expand = bool(right_expand)
+        left = tk.Frame(self, bg=pal[bg])
+        left.pack(side="left", fill="x", expand=not right_expand)
+        self.title_label = label(left, app, title, size=10, weight="bold", bg=bg)
+        self.title_label.pack(anchor="w")
+        self.hint_label = None
+        if hint:
+            self.hint_label = label(left, app, hint, size=9, color="text_muted",
+                                    bg=bg, wraplength=theme_mod.px(hint_wrap))
+            self.hint_label.pack(anchor="w",
+                                 pady=(theme_mod.px(2), theme_mod.px(0)))
+        # The "?" sits at the far right, like MAA's row help icon.
+        self.help_tip = None
+        if help_text:
+            self.help_tip = HelpTip(self, app, help_text, bg=bg)
+            self.help_tip.pack(side="right",
+                               padx=(theme_mod.px(10), theme_mod.px(2)))
+        self.right = tk.Frame(self, bg=pal[bg])
+        self.right.pack(side="right", fill="x", expand=self.right_expand,
+                        padx=(theme_mod.px(16), theme_mod.px(0)))
+
+    def put(self, widget, side="right", padx=0):
+        widget.pack(in_=self.right, side=side, padx=theme_mod.px(padx) if padx else 0)
+        return widget
+
+    def set_hint(self, text):
+        if self.hint_label is not None:
+            self.hint_label.configure(text=text)
 
 
 # -- slider ------------------------------------------------------------

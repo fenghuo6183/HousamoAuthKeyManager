@@ -44,9 +44,16 @@ class PolishTest(unittest.TestCase):
                 "brand text is clipped: %s" % widget.cget("text"))
 
     def test_overflowing_page_shows_a_scrollbar(self):
-        self._settle("settings")
-        self.assertGreater(self.app._overflow, 0)
-        self.assertTrue(self.app.page_scroll.winfo_ismapped())
+        # 设置页现在是和视口等高的一张卡，正常不会溢出；这里把账号库卡
+        # 临时撑到 2400px，造出「内容比视口高」的情况再验证滚动条。
+        card = self.app.pages["vault"][0][0]
+        self.app.pages["vault"] = [(card, 2400)]
+        try:
+            self._settle("vault")
+            self.assertGreater(self.app._overflow, 0)
+            self.assertTrue(self.app.page_scroll.winfo_ismapped())
+        finally:
+            self.app.pages["vault"] = [(card, None)]
 
     def test_short_page_hides_the_scrollbar(self):
         self._settle("tasks")
@@ -54,9 +61,14 @@ class PolishTest(unittest.TestCase):
         self.assertFalse(self.app.page_scroll.winfo_ismapped())
 
     def test_recent_imports_list_is_on_the_task_page(self):
+        # 最近导入不再撑满整页：给一个上限高度，下半屏留给壁纸。
         specs = self.app.pages["tasks"]
         self.assertEqual(len(specs), 2)
-        self.assertIsNone(specs[1][1])
+        self.assertIsNotNone(specs[1][1])
+        self._settle("tasks")
+        height = self.app._recent_card.winfo_height()
+        self.assertGreater(height, 0)
+        self.assertLessEqual(height, theme.px(330) + theme.px(24))
 
     def test_recent_imports_shows_the_last_import(self):
         bulk.record_import(self.app.settings, self.app.active_game.id,

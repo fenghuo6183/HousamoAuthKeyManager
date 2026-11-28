@@ -18,8 +18,12 @@ DEFAULTS = {
     "bg_image": "",
     "bg_blur": 12,
     "bg_alpha": 100,
+    # 0 = 纯色面板，100 = 面板完全带壁纸的色调（磨砂玻璃感）
+    "glass": 25,
     "active_game": "housamo",
     "update_source": "auto",
+    "auto_check_update": True,
+    "auto_download_update": False,
     "reconcile_ignored": {},
     "last_update_check": 0,
     "backup_keep": "all",
@@ -36,6 +40,21 @@ DEFAULTS = {
     "emulator_ports": ",".join(str(p) for p in EMULATOR_PORTS),
     # 参考 MAA 的连接配置预设：auto / mumu / ld / nox / bst / custom
     "connect_profile": "auto",
+    "adb_path": "",
+    "auto_reconnect": True,
+    "tray_icon": True,
+    "close_to_tray": False,
+    "minimize_to_tray": False,
+    "low_mode": False,
+    "hotkey": False,
+    "auto_backup": False,
+    "auto_backup_hours": 6,
+    "last_backup_at": 0,
+    "notify_balloon": True,
+    "notify_webhook": False,
+    "webhook_url": "",
+    "notify_on_backup": True,
+    "notify_on_update": True,
 }
 
 BG_BASENAME = "background"

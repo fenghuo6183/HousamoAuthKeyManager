@@ -45,7 +45,7 @@ class PageLayoutTest(unittest.TestCase):
             body = self._body(page)
             width = body.winfo_width()
             for child in body.winfo_children():
-                if child.winfo_width() <= 1:
+                if getattr(child, "_glass_bg", False) or child.winfo_width() <= 1:
                     continue
                 self.assertLessEqual(
                     child.winfo_x() + child.winfo_width(), width + 1,
@@ -55,7 +55,8 @@ class PageLayoutTest(unittest.TestCase):
         for page in ("vault", "settings", "tasks"):
             self._settle(page)
             rows = [c for c in self._body(page).winfo_children()
-                    if c.winfo_height() > 2 and c.winfo_width() > 2]
+                    if not getattr(c, "_glass_bg", False)
+                    and c.winfo_height() > 2 and c.winfo_width() > 2]
             rows.sort(key=lambda c: c.winfo_y())
             for upper, lower in zip(rows, rows[1:]):
                 self.assertGreaterEqual(

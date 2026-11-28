@@ -9,6 +9,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
@@ -27,9 +29,12 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ListView;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -104,6 +109,18 @@ public class MainActivity extends Activity {
 
     private TextView tvState;
     private LinearLayout host;
+    /** 外层容器：底下垫背景图，上面才是原来的页面。 */
+    private FrameLayout shellBox;
+    private ImageView bgView;
+    private View veilView;
+    private Bitmap bgBitmap;
+    private LinearLayout rootPanel;
+    private LinearLayout navBar;
+    private View navLine;
+    /** 所有用 card() 建出来的卡片，改透明度时统一重刷背景。 */
+    private final java.util.List<View> glassViews = new java.util.ArrayList<View>();
+    private SeekBar glassBar;
+    private TextView glassVal;
     private View pageHome, pageTask, pageAcc, pageSet;
     private TextView tabHome, tabTask, tabAcc, tabSet;
     private Button btnLock, btnShot, btnNight;
@@ -117,6 +134,7 @@ public class MainActivity extends Activity {
     private static final int REQ_TREE_IMPORT = 0x74;
     private static final int REQ_QR_IMG = 0x76;
     private static final int REQ_QR_SHOT = 0x77;
+    private static final int REQ_BG = 0x78;
     /** 相机拍照扫二维码时的落盘位置（onActivityResult 里读回来解码）。 */
     private File pendingShot;
     private final java.util.List<Account> exportEntries = new java.util.ArrayList<Account>();
@@ -356,15 +374,33 @@ public class MainActivity extends Activity {
     }
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(c("#F2F3F6"));
+        shellBox = new FrameLayout(this);
+        shellBox.setBackgroundColor(c("#F2F3F6"));
+
+        bgView = new ImageView(this);
+        bgView.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        bgView.setVisibility(View.GONE);
+        shellBox.addView(bgView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // 壁纸上盖一层很薄的底色，标题和说明文字在任何图上都读得清。
+        veilView = new View(this);
+        veilView.setBackgroundColor(withAlpha(night() ? Color.parseColor("#0B0E13") : Color.parseColor("#FFFFFF"), 54));
+        veilView.setVisibility(View.GONE);
+        shellBox.addView(veilView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        rootPanel = new LinearLayout(this);
+        rootPanel.setOrientation(LinearLayout.VERTICAL);
+        shellBox.addView(rootPanel, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
         applyTheme();
         applyShotFlag();
 
         host = new LinearLayout(this);
         host.setOrientation(LinearLayout.VERTICAL);
-        root.addView(host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        rootPanel.addView(host, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         pageHome = wrapScroll(buildHome());
         pageTask = wrapScroll(buildTask());
@@ -375,14 +411,15 @@ public class MainActivity extends Activity {
         host.addView(pageAcc, full());
         host.addView(pageSet, full());
 
-        View line = new View(this);
-        line.setBackgroundColor(c("#E6E9EF"));
-        root.addView(line, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        navLine = new View(this);
+        navLine.setBackgroundColor(c("#E6E9EF"));
+        rootPanel.addView(navLine, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
 
-        LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.HORIZONTAL);
-        nav.setBackgroundColor(c("#FFFFFF"));
-        nav.setPadding(0, dp(6), 0, dp(6));
+        navBar = new LinearLayout(this);
+        navBar.setOrientation(LinearLayout.HORIZONTAL);
+        navBar.setBackgroundColor(c("#FFFFFF"));
+        navBar.setPadding(0, dp(6), 0, dp(6));
+        LinearLayout nav = navBar;
         tabHome = mkTab("首页", R.drawable.ic_home);
         tabTask = mkTab("任务", R.drawable.ic_task);
         tabAcc = mkTab("账号", R.drawable.ic_acc);
@@ -403,9 +440,11 @@ public class MainActivity extends Activity {
         nav.addView(tabTask, weightNav());
         nav.addView(tabAcc, weightNav());
         nav.addView(tabSet, weightNav());
-        root.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        rootPanel.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        applyWallpaper();
+        applyGlass();
         showPage(0);
-        return root;
+        return shellBox;
     }
 
     private TextView mkTab(String text, int icon) {
@@ -675,6 +714,124 @@ public class MainActivity extends Activity {
         h[0] = showCard(c);
         h[0].setCancelable(false);
         h[0].setCanceledOnTouchOutside(false);
+    }
+
+    // ---------- 背景图与玻璃卡片 ----------
+
+    private boolean bgOn() { return bgBitmap != null; }
+
+    private int glassPct() {
+        int g = getPreferences(MODE_PRIVATE).getInt("glass", 25);
+        return Math.max(0, Math.min(100, g));
+    }
+
+    /** 0% 时几乎不透明，100% 时最透；和桌面版同一套换算。 */
+    private int cardAlpha() {
+        return (int) Math.round(255 * (0.94 - 0.64 * glassPct() / 100.0));
+    }
+
+    private static int withAlpha(int color, int alpha) {
+        int a = Math.max(0, Math.min(255, alpha));
+        return (color & 0x00FFFFFF) | (a << 24);
+    }
+
+    private void applyWallpaper() {
+        loadWallpaper();
+        applyGlass();
+    }
+
+    /** 有图就把整套面换成半透明；没图恢复原来的纯色。 */
+    private void applyGlass() {
+        boolean on = bgOn();
+        if (rootPanel != null) rootPanel.setBackgroundColor(on ? Color.TRANSPARENT : c("#F2F3F6"));
+        if (navBar != null) {
+            navBar.setBackgroundColor(on ? withAlpha(c("#FFFFFF"), Math.min(255, cardAlpha() + 46)) : c("#FFFFFF"));
+        }
+        if (navLine != null) {
+            navLine.setBackgroundColor(on ? withAlpha(c("#E6E9EF"), 130) : c("#E6E9EF"));
+        }
+        if (glassVal != null) glassVal.setText(glassPct() + "%");
+        if (glassBar != null && glassBar.getProgress() != glassPct()) glassBar.setProgress(glassPct());
+        for (int i = 0; i < glassViews.size(); i++) {
+            View v = glassViews.get(i);
+            v.setBackground(roundRect(c("#FFFFFF"), 16, c("#EBEEF3"), 1));
+        }
+    }
+
+    private void loadWallpaper() {
+        String path = getPreferences(MODE_PRIVATE).getString("bgImage", "");
+        bgBitmap = null;
+        if (path != null && path.length() > 0) {
+            try {
+                File f = new File(path);
+                if (f.isFile()) {
+                    android.graphics.BitmapFactory.Options probe = new android.graphics.BitmapFactory.Options();
+                    probe.inJustDecodeBounds = true;
+                    BitmapFactory.decodeFile(path, probe);
+                    int tw = getResources().getDisplayMetrics().widthPixels;
+                    int th = getResources().getDisplayMetrics().heightPixels;
+                    int sample = 1;
+                    while (probe.outWidth / (sample * 2) >= tw && probe.outHeight / (sample * 2) >= th) sample *= 2;
+                    android.graphics.BitmapFactory.Options opt = new android.graphics.BitmapFactory.Options();
+                    opt.inSampleSize = sample;
+                    Bitmap bm = BitmapFactory.decodeFile(path, opt);
+                    if (bm != null) bgBitmap = blurBitmap(bm, Math.max(1, Math.min(24, tw / 90)));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (bgView != null) {
+            bgView.setImageBitmap(bgBitmap);
+            bgView.setVisibility(bgBitmap != null ? View.VISIBLE : View.GONE);
+        }
+        if (veilView != null) veilView.setVisibility(bgBitmap != null ? View.VISIBLE : View.GONE);
+    }
+
+    /** 降采样再放大 = 廉价的高斯近似，老机器也扛得住。 */
+    private Bitmap blurBitmap(Bitmap src, int radius) {
+        int w = Math.max(1, src.getWidth()), h = Math.max(1, src.getHeight());
+        int div = Math.max(2, radius);
+        int tw = Math.max(1, w / div), th = Math.max(1, h / div);
+        Bitmap small = Bitmap.createScaledBitmap(src, tw, th, true);
+        Bitmap out = Bitmap.createScaledBitmap(small, w, h, true);
+        if (small != src) small.recycle();
+        src.recycle();
+        return out;
+    }
+
+    private void chooseWallpaper() {
+        Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+        i.setType("image/*");
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        try {
+            startActivityForResult(Intent.createChooser(i, "选择背景图"), REQ_BG);
+        } catch (Throwable t) {
+            toast("这台设备上没有可用的图片选择器");
+        }
+    }
+
+    private void importWallpaper(Uri uri) {
+        try {
+            InputStream in = getContentResolver().openInputStream(uri);
+            if (in == null) { toast("读不到这张图"); return; }
+            File out = new File(getFilesDir(), "background.jpg");
+            FileOutputStream fo = new FileOutputStream(out);
+            byte[] buf = new byte[16384];
+            int n;
+            while ((n = in.read(buf)) > 0) fo.write(buf, 0, n);
+            fo.close();
+            in.close();
+            getPreferences(MODE_PRIVATE).edit().putString("bgImage", out.getAbsolutePath()).apply();
+            applyWallpaper();
+            toast("背景图已更新");
+            if (shellBox != null) {
+                shellBox.post(new Runnable() {
+                    public void run() { recreate(); }
+                });
+            }
+        } catch (Throwable t) {
+            toast("背景图设置失败：" + t.getMessage());
+        }
     }
 
     private void applyTheme() {
@@ -1065,6 +1222,58 @@ public class MainActivity extends Activity {
         lh.setTextColor(c("#9AA3B0"));
         lh.setPadding(dp(2), dp(10), dp(2), dp(2));
         look.addView(lh);
+        look.addView(divider());
+        look.addView(rowWithButton(value(0, bgOn() ? "卡片会透出这张壁纸" : "还没选，使用纯色底"), "背景图",
+                bgOn() ? "更换" : "选择", new View.OnClickListener() {
+            public void onClick(View v) { chooseWallpaper(); }
+        }));
+        if (bgOn()) {
+            look.addView(rowWithButton(value(0, "删掉后回到纯色底"), "清除背景图", "清除", new View.OnClickListener() {
+                public void onClick(View v) {
+                    getPreferences(MODE_PRIVATE).edit().remove("bgImage").apply();
+                    applyWallpaper();
+                    recreate();
+                }
+            }));
+        }
+        look.addView(divider());
+
+        LinearLayout gwrap = new LinearLayout(this);
+        gwrap.setOrientation(LinearLayout.VERTICAL);
+        gwrap.setPadding(dp(2), dp(12), dp(2), dp(2));
+        LinearLayout ghead = new LinearLayout(this);
+        ghead.setOrientation(LinearLayout.HORIZONTAL);
+        ghead.setGravity(Gravity.CENTER_VERTICAL);
+        TextView glabel = new TextView(this);
+        glabel.setText("卡片透明度");
+        glabel.setTextSize(14);
+        glabel.setTextColor(c("#1B1F24"));
+        ghead.addView(glabel, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        glassVal = value(0, glassPct() + "%");
+        ghead.addView(glassVal);
+        gwrap.addView(ghead);
+        glassBar = new SeekBar(this);
+        glassBar.setMax(100);
+        glassBar.setProgress(glassPct());
+        glassBar.setPadding(dp(2), dp(4), dp(2), dp(2));
+        glassBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            public void onProgressChanged(SeekBar sb, int v, boolean fromUser) {
+                if (!fromUser) return;
+                getPreferences(MODE_PRIVATE).edit().putInt("glass", v).apply();
+                if (glassVal != null) glassVal.setText(v + "%");
+                applyGlass();
+            }
+            public void onStartTrackingTouch(SeekBar sb) {}
+            public void onStopTrackingTouch(SeekBar sb) {}
+        });
+        gwrap.addView(glassBar, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        TextView ght = new TextView(this);
+        ght.setText("越大卡片越透，底下的壁纸越明显；字始终不透明。没选背景图时这一项不影响显示。");
+        ght.setTextSize(11);
+        ght.setTextColor(c("#9AA3B0"));
+        ght.setPadding(dp(2), dp(2), dp(2), dp(2));
+        gwrap.addView(ght);
+        look.addView(gwrap);
         p.addView(look, cardParams(0));
 
         LinearLayout sec = card();
@@ -1456,10 +1665,25 @@ public class MainActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         c.setBackground(roundRect(c("#FFFFFF"), 16, c("#EBEEF3"), 1));
         c.setPadding(dp(14), dp(4), dp(14), dp(8));
+        glassViews.add(c);
         return c;
     }
 
     private android.graphics.drawable.Drawable roundRect(int color, int radiusDp, int strokeColor, int strokeDp) {
+        if (bgOn() && Color.alpha(color) == 255) {
+            // 有背景图时，浅色面（卡片、输入框、白按钮）自动变成半透明，
+            // 深色面（日志面板、深色块）变淡一点点，文字颜色不变。
+            int r = Color.red(color), g2 = Color.green(color), b = Color.blue(color);
+            int lum = (r * 299 + g2 * 587 + b * 114) / 1000;
+            if (lum >= 200) {
+                color = Color.argb(Math.max(150, Math.min(250, cardAlpha() + 34)), r, g2, b);
+            } else if (lum <= 60) {
+                color = Color.argb(Math.max(200, Math.min(245, cardAlpha() + 96)), r, g2, b);
+            }
+            if (strokeColor != 0 && Color.alpha(strokeColor) == 255) {
+                strokeColor = withAlpha(strokeColor, 130);
+            }
+        }
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
         g.setColor(color);
         g.setCornerRadius(dp(radiusDp));
@@ -4300,6 +4524,10 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int req, int res, Intent data) {
         super.onActivityResult(req, res, data);
+        if (req == REQ_BG) {
+            if (res == RESULT_OK && data != null && data.getData() != null) importWallpaper(data.getData());
+            return;
+        }
         if (req == REQ_QR_SHOT) {
             File shot = pendingShot;
             pendingShot = null;

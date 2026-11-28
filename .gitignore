@@ -17,3 +17,11 @@ android/build/
 # 系统
 Thumbs.db
 .DS_Store
+
+# 本地开发用脚本/临时产物
+win/.tmp_*.py
+win/.tmpqt_*.py
+win/hak-selftest-*/
+hak-selftest-*/
+theme-src/
+win/assets/
