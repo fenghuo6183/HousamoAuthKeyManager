@@ -2,7 +2,7 @@
 
 给《东京放课后召唤师》(東京放課後サモナーズ / Housamo, 包名 `jp.co.lifewonders.housamo`) 用的 **一键备份 / 迁移 / 多开** 工具。
 
-> 社区里说的 **aunkey** 就是游戏的 **AuthKey**：一个几十~几百字节的文本文件，游戏用它记住「你是哪个账号」。删掉它，游戏会当成新号重新生成；把它复制回原位，游戏就登回原账号。本工具做的事就是**把这个文件安全地取出来、存好、再写回去**。
+> **AuthKey**：一个几十~几百字节的文本文件，游戏用它记住「你是哪个账号」。删掉它，游戏会当成新号重新生成；把它复制回原位，游戏就登回原账号。本工具做的事就是**把这个文件安全地取出来、存好、再写回去**。
 
 ![platform](https://img.shields.io/badge/platform-Windows%20%7C%20Android-blue) ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
