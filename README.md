@@ -167,8 +167,37 @@ pip install pillow pyinstaller && build.bat  :: 打包 exe -> dist\AuthKeyManage
 ```bash
 python tools/fetch_toolchain.py    # JDK 17 + cmdline-tools + platform-tools
 python tools/fetch_sdk_packages.py # platform-34 + build-tools 34.0.0
-python android/build_apk.py        # -> dist/HousamoAuthKeyManager-1.0.19.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
+python android/build_apk.py        # -> dist/HousamoAuthKeyManager-<版本>.apk（Shizuku api 13.1.0 已 vendor 在 android/libs）
 ```
+
+## 发版流程（两端同号）
+
+**一个功能两端一起做，发版时两端同一个版本号、发同一份 Release。** 具体这么走：
+
+1. **改版本号（四处一起改，`win/app/theme.py` 是唯一基准）**
+   | 位置 | 字段 |
+   | --- | --- |
+   | `win/app/theme.py` | `APP_VERSION`（基准） |
+   | `android/AndroidManifest.xml` | `android:versionName`、`android:versionCode` |
+   | `android/build_apk.py` | `VERSION_NAME`、`VERSION_CODE` |
+   | `android/src/com/housamo/authkey/MainActivity.java` | `CURRENT_VER` |
+
+   `versionCode` 每发一版 **+1**（只要求比上一版大）。改完跑 `python tools/check_version.py` 核对四处是否一致；`win/tests/test_version_sync.py` 也会在跑测试时自动校验，不一致直接报错。
+
+2. **功能两端都改**：电脑版在 `win/app/*`，手机版在 `android/src/com/housamo/authkey/MainActivity.java`。同一件事两边都实现，落点和提示口径保持一致（例如「打包导出全部 key」两端都跟随设置里的导出位置，两个游戏各一个子文件夹）。只改一边的功能不发版。
+
+3. **跑测试 + 出包**
+
+   ```powershell
+   cd win
+   python -m unittest discover -s tests -p "test_*.py"   # 全绿再往下走
+   .\build.bat                                           # -> win\dist\AuthKeyManager\AuthKeyManager.exe
+   cd ..
+   python tools/make_win_zip.py                          # -> dist/AuthKeyManager-win64.zip
+   python android/build_apk.py                           # -> dist/HousamoAuthKeyManager-<版本>.apk
+   ```
+
+4. **发布**：把发版说明写到 `.tmp/release_body.md`，然后 `python tools/publish_github.py`。它会从 `theme.APP_VERSION` 读版本号，把源码同步到 GitHub，建（已存在则更新）同号 Release，并把 `AuthKeyManager-win64.zip` 和对应版本的 APK 一起传上去。需要特别强调必须安装的版本，在说明里加一行 `force-update`。
 
 ## 常见问题
 
