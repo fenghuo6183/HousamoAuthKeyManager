@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.24";
+    static final String CURRENT_VER = "1.0.28";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -115,7 +115,6 @@ public class MainActivity extends Activity {
     private static final int REQ_TREE_COPY = 0x72;
     private static final int REQ_TREE_BAK = 0x73;
     private static final int REQ_TREE_IMPORT = 0x74;
-    private static final int REQ_TREE_ZIP = 0x75;
     private static final int REQ_QR_IMG = 0x76;
     private static final int REQ_QR_SHOT = 0x77;
     /** 相机拍照扫二维码时的落盘位置（onActivityResult 里读回来解码）。 */
@@ -867,7 +866,7 @@ public class MainActivity extends Activity {
             public void onClick(View v) { pickQrImage(); }
         }), cardParams(0));
 
-        p.addView(taskCard("打包导出全部 key", "选一个文件夹，把账号库里这个游戏的 key 全打成一个 zip（含 manifest），换机备份一次带走。", new View.OnClickListener() {
+        p.addView(taskCard("打包导出全部 key", "把账号库里这个游戏的 key 全打成一个 zip（含 manifest），直接写进「设置 → 导出位置」，换机备份一次带走。", new View.OnClickListener() {
             public void onClick(View v) { startZipExport(); }
         }), cardParams(0));
 
@@ -1120,6 +1119,12 @@ public class MainActivity extends Activity {
         exp.addView(rowWithButton(rowExportVal, "导出位置", "更改", new View.OnClickListener() {
             public void onClick(View v) { chooseExportDir(); }
         }));
+        TextView exh = new TextView(this);
+        exh.setText("「打包导出全部 key」不再每次选文件夹，zip 直接写进这个位置里的游戏子文件夹。");
+        exh.setTextSize(11);
+        exh.setTextColor(c("#9AA3B0"));
+        exh.setPadding(dp(2), dp(10), dp(2), dp(2));
+        exp.addView(exh);
         exp.addView(divider());
         rowBackupVal = value(0, backupRootLabel());
         exp.addView(rowWithButton(rowBackupVal, "备份位置", "更改", new View.OnClickListener() {
@@ -2602,7 +2607,11 @@ public class MainActivity extends Activity {
                 final String source = found == null ? "?" : found;
                 runOnUiThread(new Runnable() {
                     public void run() {
-                        askNameThenSave(theKey, source);
+                        maybeShowExportTip(new Runnable() {
+                            public void run() {
+                                askNameThenSave(theKey, source);
+                            }
+                        });
                     }
                 });
             }
@@ -2697,6 +2706,57 @@ public class MainActivity extends Activity {
         if (rowHomeCnt != null) {
             rowHomeCnt.setText(countAccounts() + " 个账号 · " + (countBackups() + countExportEntries()) + " 个备份");
         }
+    }
+
+    /**
+     * 前三次从游戏提取到 key 后，先让用户读满 3 秒「这个 key 极其重要」的提醒再往下走。
+     * 计数存在本机偏好里（两端各算各的），读完 3 次就不再打扰。
+     */
+    private void maybeShowExportTip(final Runnable next) {
+        int shown = getPreferences(MODE_PRIVATE).getInt("exportTipShown", 0);
+        if (shown >= 3) {
+            next.run();
+            return;
+        }
+        getPreferences(MODE_PRIVATE).edit().putInt("exportTipShown", shown + 1).apply();
+
+        LinearLayout c = dlgCard();
+        dlgTitle(c, "这个 key 极其重要，请先读完");
+        dlgSub(c, "它是这个账号唯一的登录凭证。丢了、被覆盖了，号就没了——官方找回很麻烦，很多情况找不回来。");
+        c.addView(dlgStep(1, "手机存一份",
+                "下面起名保存后会导出到 Download/东放Key/" + game.exportSub()
+                        + "/<名字>/AuthKey.txt，别删掉这个文件夹。"));
+        c.addView(dlgStep(2, "电脑也存一份",
+                "再用电脑版提取一次，或把这个 AuthKey.txt 拷到电脑上；网盘、邮箱里也各放一份更稳。"));
+        c.addView(dlgStep(3, "动手机之前先确认",
+                "换手机、重装 App、清数据、刷机之前，先确认手机和电脑这两份都还在。"));
+
+        final AlertDialog[] h = new AlertDialog[1];
+        final Button primary = dlgPrimary("请先读完（3 秒）", null);
+        primary.setEnabled(false);
+        primary.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                if (h[0] != null) h[0].dismiss();
+                next.run();
+            }
+        });
+        c.addView(primary);
+        // dismissOnOutside=false：读满 3 秒前点空白、按返回键都关不掉。
+        h[0] = showCard(c, false);
+
+        final android.os.Handler ui = new android.os.Handler(android.os.Looper.getMainLooper());
+        ui.postDelayed(new Runnable() {
+            public void run() { primary.setText("请先读完（2 秒）"); }
+        }, 1000L);
+        ui.postDelayed(new Runnable() {
+            public void run() { primary.setText("请先读完（1 秒）"); }
+        }, 2000L);
+        ui.postDelayed(new Runnable() {
+            public void run() {
+                primary.setText("我知道了，去保存");
+                primary.setEnabled(true);
+            }
+        }, 3000L);
     }
 
     private void askNameThenSave(final String key, final String source) {
@@ -3798,42 +3858,29 @@ public class MainActivity extends Activity {
         h[0] = showCard(c);
     }
 
-    /** 任务页：把账号库里的 key 打包成一个 zip。 */
+    /** 任务页：把账号库里的 key 打包成一个 zip，直接写进设置里的导出位置。 */
     private void startZipExport() {
         if (countAccounts() == 0) {
             toast("账号库里还没有账号");
             return;
         }
-        try {
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
-            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                    | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            startActivityForResult(i, REQ_TREE_ZIP);
-        } catch (Throwable t) {
-            toast("打不开文件夹选择器");
-        }
-    }
-
-    private void writeZipToTree(final Uri tree) {
-        final String label = treeLabel(tree);
-        log("[打包] 目标文件夹 " + label);
+        final String name = "东放Key-" + game.label + "-"
+                + new java.text.SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new java.util.Date()) + ".zip";
+        log("[打包] 目标 " + exportRootLabelFull() + name);
         pool.execute(new Runnable() {
             public void run() {
-                String name = "东放Key-" + game.label + "-"
-                        + new java.text.SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(new java.util.Date()) + ".zip";
-                int n = 0;
+                byte[] blob;
+                int n;
+                StringBuilder man = new StringBuilder();
+                man.append("Housamo AuthKey Manager\n");
+                man.append("游戏: ").append(game.label).append("\n");
+                man.append("时间: ").append(stamp()).append("\n");
+                man.append("说明: 每个子文件夹里的 AuthKey.txt 就是一个账号的 key。\n\n");
+                man.append("文件夹\t指纹\t大小\t创建时间\t备注\n");
                 try {
-                    String docId = android.provider.DocumentsContract.getTreeDocumentId(tree);
-                    Uri parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, docId);
-                    Uri out = android.provider.DocumentsContract.createDocument(getContentResolver(), parent, "application/zip", name);
-                    java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(
-                            new java.io.BufferedOutputStream(getContentResolver().openOutputStream(out)));
-                    StringBuilder man = new StringBuilder();
-                    man.append("Housamo AuthKey Manager\n");
-                    man.append("游戏: ").append(game.label).append("\n");
-                    man.append("时间: ").append(stamp()).append("\n");
-                    man.append("说明: 每个子文件夹里的 AuthKey.txt 就是一个账号的 key。\n\n");
-                    man.append("文件夹\t指纹\t大小\t创建时间\t备注\n");
+                    java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+                    java.util.zip.ZipOutputStream zos = new java.util.zip.ZipOutputStream(buf);
+                    int count = 0;
                     for (Account a : accounts) {
                         if (!inGame(a) || a.isBackup()) continue;
                         String dir = safeName(a.name);
@@ -3843,25 +3890,42 @@ public class MainActivity extends Activity {
                         man.append(dir).append("\t").append(a.fpShort()).append("\t")
                                 .append(a.key.length()).append("B\t").append(a.created).append("\t")
                                 .append(a.note == null ? "" : a.note).append("\n");
-                        n++;
+                        count++;
                     }
                     zos.putNextEntry(new java.util.zip.ZipEntry("manifest.txt"));
                     zos.write(man.toString().getBytes("UTF-8"));
                     zos.closeEntry();
                     zos.finish();
                     zos.close();
+                    blob = buf.toByteArray();
+                    n = count;
                 } catch (Throwable t) {
                     log("[打包] 失败：" + t);
-                    toast("打包失败：" + t);
+                    runOnUiThread(new Runnable() {
+                        public void run() { toast("打包失败，详见运行日志"); }
+                    });
                     return;
                 }
-                final int count = n;
-                log("[打包] 已写入 " + count + " 个 key → " + label + "/" + name);
+                final String at = writeZipToExport(name, blob);
+                final int cnt = n;
                 runOnUiThread(new Runnable() {
                     public void run() {
+                        if (at == null) {
+                            log("[打包] 写不进导出位置");
+                            LinearLayout c = dlgCard();
+                            dlgTitle(c, "打包失败");
+                            dlgSub(c, "写不进导出位置。到「设置 → 导出位置」换一个文件夹，或授予存储权限后再试。");
+                            final AlertDialog[] h = new AlertDialog[1];
+                            c.addView(dlgPrimary("知道了", new View.OnClickListener() {
+                                public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
+                            }));
+                            h[0] = showCard(c);
+                            return;
+                        }
+                        log("[打包] 已写入 " + cnt + " 个 key → " + at);
                         LinearLayout c = dlgCard();
                         dlgTitle(c, "打包完成");
-                        dlgSub(c, "已把 " + count + " 个账号写进 " + label + "/" + name + "，里面还有一个 manifest.txt 写着每个账号的指纹。");
+                        dlgSub(c, "已把 " + cnt + " 个账号写进 " + at + "，里面还有一个 manifest.txt 写着每个账号的指纹。");
                         final AlertDialog[] h = new AlertDialog[1];
                         c.addView(dlgPrimary("知道了", new View.OnClickListener() {
                             public void onClick(View v) { if (h[0] != null) h[0].dismiss(); }
@@ -3871,6 +3935,84 @@ public class MainActivity extends Activity {
                 });
             }
         });
+    }
+
+    /** 按「设置 → 导出位置」写 zip：自选目录 → 直接文件 → MediaStore → shell。返回落点，失败 null。 */
+    private String writeZipToExport(String name, byte[] blob) {
+        android.net.Uri tree = exportTreeForGame();
+        if (tree != null) {
+            try {
+                String docId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+                android.net.Uri parent = android.provider.DocumentsContract.buildDocumentUriUsingTree(tree, docId);
+                android.net.Uri old = findChild(parent, name);
+                if (old != null) {
+                    try {
+                        android.provider.DocumentsContract.deleteDocument(getContentResolver(), old);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                android.net.Uri out = android.provider.DocumentsContract.createDocument(
+                        getContentResolver(), parent, "application/zip", name);
+                java.io.OutputStream os = getContentResolver().openOutputStream(out);
+                try {
+                    os.write(blob);
+                    os.flush();
+                } finally {
+                    os.close();
+                }
+                return exportRootLabelFull() + name;
+            } catch (Throwable t) {
+                log("[打包] 自定义目录写入失败：" + t);
+            }
+        }
+        String rel = exportRelPrefix();
+        try {
+            File dir = exportRootGameDir();
+            if (dir.exists() || dir.mkdirs()) {
+                File f = new File(dir, name);
+                FileOutputStream fo = new FileOutputStream(f);
+                try {
+                    fo.write(blob);
+                    fo.flush();
+                } finally {
+                    fo.close();
+                }
+                if (f.length() == blob.length) return exportRootLabelFull() + name;
+            }
+        } catch (Exception e) {
+            log("[打包] 直接写入失败：" + e.getMessage());
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            java.io.OutputStream os = null;
+            try {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, "application/zip");
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH, rel);
+                android.net.Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri != null) {
+                    os = getContentResolver().openOutputStream(uri);
+                    if (os != null) {
+                        os.write(blob);
+                        os.flush();
+                        return exportRootLabelFull() + name;
+                    }
+                }
+            } catch (Exception e) {
+                log("[打包] MediaStore 写入失败：" + e.getMessage());
+            } finally {
+                try {
+                    if (os != null) os.close();
+                } catch (Exception ignored) {
+                }
+            }
+        }
+        if (hasShell()) {
+            String dir = exportRootShellDir();
+            Res r = shWithInput("mkdir -p '" + dir + "' && cat > '" + dir + "/" + name + "'", blob, 30000);
+            if (r.code == 0) return exportRootLabelFull() + name;
+        }
+        return null;
     }
 
     private void addAccount(String name, String key, String source) {
@@ -4238,7 +4380,7 @@ public class MainActivity extends Activity {
             decodeQrUri(uri);
             return;
         }
-        if (req != REQ_TREE && req != REQ_TREE_COPY && req != REQ_TREE_BAK && req != REQ_TREE_IMPORT && req != REQ_TREE_ZIP) return;
+        if (req != REQ_TREE && req != REQ_TREE_COPY && req != REQ_TREE_BAK && req != REQ_TREE_IMPORT) return;
         try {
             getContentResolver().takePersistableUriPermission(uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
@@ -4246,10 +4388,6 @@ public class MainActivity extends Activity {
         }
         if (req == REQ_TREE_IMPORT) {
             scanFolderForKeys(uri);
-            return;
-        }
-        if (req == REQ_TREE_ZIP) {
-            writeZipToTree(uri);
             return;
         }
         if (req == REQ_TREE_COPY) {

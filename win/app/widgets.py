@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import tkinter.ttk as ttk
 
 from . import bgfx
 from . import theme as theme_mod
@@ -165,7 +166,8 @@ class PillButton(tk.Canvas):
     }
 
     def __init__(self, app, master, text, command=None, kind="primary",
-                 width=170, height=40, radius=None, glyph="", bg="card"):
+                 width=170, height=40, radius=None, glyph="", bg="card",
+                 autosize=None):
         width = theme_mod.px(width)
         height = theme_mod.px(height)
         radius = theme_mod.px(radius) if radius is not None else None
@@ -184,6 +186,10 @@ class PillButton(tk.Canvas):
         self._enabled = True
         self._state = "normal"
         self._photos = {}
+        # Grow-only by default: a fixed width is a minimum, never a caption
+        # clipper. autosize=True also shrinks when set_text() gets shorter.
+        self.autosize = autosize is not False
+        self._free_fit = autosize is True
         self._bg_id = None
         self._text_id = None
         self._base_bg = bg
@@ -191,12 +197,36 @@ class PillButton(tk.Canvas):
         self.bind("<Leave>", lambda e: self._set_state("normal"))
         self.bind("<ButtonPress-1>", lambda e: self._set_state("press"))
         self.bind("<ButtonRelease-1>", self._on_release)
+        if self.autosize:
+            self._fit_text()
         self._render()
 
     # -- api ---------------------------------------------------------
     def set_text(self, text):
         self.text = text
+        if self.autosize:
+            self._fit_text()
         self._render()
+
+    def _fit_text(self):
+        """Grow/shrink to the caption so long device or game names are not clipped."""
+        try:
+            from tkinter import font as tkfont
+            weight = "bold" if self.kind in ("primary", "soft") else "normal"
+            caption = ("%s  %s" % (self.glyph, self.text)) if self.glyph else self.text
+            family, size, _w = theme_mod.font(10, weight)
+            probe = tkfont.Font(family=family, size=size, weight=weight)
+            need = probe.measure(caption) + theme_mod.px(34)
+        except Exception:
+            return
+        need = max(theme_mod.px(84), need)
+        if self._free_fit:
+            target = need
+        else:
+            target = max(self._width, need)
+        if target != self._width:
+            self._width = target
+            self.configure(width=target)
 
     def set_enabled(self, enabled):
         self._enabled = bool(enabled)
@@ -225,7 +255,7 @@ class PillButton(tk.Canvas):
         fill, fg, border = self._palette()
         photo = None
         if bgfx.PIL_OK and ImageTk is not None:
-            key = (fill, border)
+            key = (fill, border, self._width, self._height)
             if key not in self._photos:
                 img = bgfx.rounded_rgba(self._width, self._height, self._radius,
                                         theme_mod.hex_to_rgb(fill) + (255,),
@@ -534,3 +564,61 @@ class SectionTitle:
         if right is not None:
             right(row)
         return row
+
+
+# -- device picker -----------------------------------------------------
+class DeviceList(tk.Frame):
+    """MAA-style device selector: one read-only dropdown, no cards."""
+
+    def __init__(self, app, master, command=None, bg="card"):
+        tk.Frame.__init__(self, master, bg=app.pal[bg])
+        self.app = app
+        self.command = command
+        self._devices = []
+        self._selected = None
+        self.var = tk.StringVar(master=self)
+        self.combo = ttk.Combobox(self, textvariable=self.var, state="readonly",
+                                  values=(), height=12,
+                                  font=theme_mod.font(10))
+        self.combo.pack(fill="x", ipady=theme_mod.px(4))
+        self.combo.bind("<<ComboboxSelected>>", self._on_pick)
+
+    @staticmethod
+    def _text(device):
+        name = device.short_label or device.serial
+        text = name if device.serial in name else "%s  (%s)" % (name, device.serial)
+        if not device.online:
+            text += "  \u00b7 \u79bb\u7ebf"
+        return text
+
+    # -- data --------------------------------------------------------
+    def set_devices(self, devices, selected=None):
+        self._devices = list(devices)
+        self.combo.configure(values=[self._text(dev) for dev in self._devices])
+        self.set_selected(self._selected if selected is None else selected)
+
+    def update(self, devices, selected=None):
+        self.set_devices(devices, selected)
+
+    def serials(self):
+        return [dev.serial for dev in self._devices]
+
+    def set_selected(self, serial):
+        self._selected = serial
+        for device in self._devices:
+            if device.serial == serial:
+                self.var.set(self._text(device))
+                return
+        self.var.set("")
+
+    def set_game_state(self, serial, state):
+        for device in self._devices:
+            if device.serial == serial:
+                device.game_installed = state
+        if self._selected == serial:
+            self.set_selected(serial)
+
+    def _on_pick(self, _event=None):
+        index = self.combo.current()
+        if 0 <= index < len(self._devices) and self.command:
+            self.command(self._devices[index])

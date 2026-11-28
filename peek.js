@@ -1,0 +1,12 @@
+const fs = require('fs');
+const p = process.argv[2];
+const off = Number(process.argv[3]);
+const before = Number(process.argv[4] || 600);
+const after = Number(process.argv[5] || 1600);
+const fd = fs.openSync(p, 'r');
+const start = Math.max(0, off - before);
+const buf = Buffer.alloc(off + after - start);
+fs.readSync(fd, buf, 0, buf.length, start);
+fs.closeSync(fd);
+const text = buf.toString('utf8');
+process.stdout.write('--- offset ' + off + ' ---\n' + JSON.stringify(text) + '\n');

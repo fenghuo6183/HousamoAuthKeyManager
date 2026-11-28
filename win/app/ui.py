@@ -20,6 +20,7 @@ from . import bgfx
 from . import bulk
 from . import config
 from . import dialogs
+from . import dnd
 from . import game
 from . import keyscan
 from . import lanshare
@@ -33,10 +34,20 @@ from .widgets import (DeviceList, MiniSlider, NavButton, PillButton, RoundCard,
 
 EMULATOR_PORTS = list(config.EMULATOR_PORTS)
 
+# 参考 MAA 的连接配置：选一个预设就把地址填好，自定义则手填。
+CONNECT_PROFILES = (
+    ("auto", "自动检测（扫端口）", ""),
+    ("mumu", "MuMu 模拟器", "127.0.0.1:16384"),
+    ("ld", "雷电模拟器", "127.0.0.1:5555"),
+    ("nox", "夜神模拟器", "127.0.0.1:62001"),
+    ("bst", "蓝叠模拟器", "127.0.0.1:5555"),
+    ("custom", "自定义地址", None),
+)
+
 APP_TITLE = theme.APP_NAME
 # Authored at 96 dpi; _relayout scales them through theme.px() so hi-dpi
 # monitors get a bigger window instead of a blurred bitmap stretch.
-RAIL_W = 242
+RAIL_W = 258
 PAGE_PAD = 16
 GAP = 12
 LOG_H = 156
@@ -81,6 +92,14 @@ class App:
         self._bg_photo = None
         self._closing = False
         self._first_job = None
+        self._probe = {}
+        self._dnd = None
+        self._poll_job = None
+        self._quiet_job = None
+        self._quiet_pending = None
+        self._quiet_wait = 0
+        self._flash_id = None
+        self._flash_job = None
         self._scroll = {}
         self._overflow = 0
 
@@ -116,16 +135,27 @@ class App:
         self._refresh_capture_button()
         self._auto_check = self.root.after(3000, self._auto_update_check)
         self.root.bind("<Destroy>", self._on_destroy, add="+")
+        self._install_drop_target()
+        self._start_poll()
 
     # -- window chrome -------------------------------------------------
     def _on_destroy(self, event=None):
         if event is not None and event.widget is not self.root:
             return
         self._closing = True
-        job, self._first_job = self._first_job, None
-        if job is not None:
+        for attr in ("_first_job", "_poll_job", "_poll_after", "_flash_job",
+                     "_quiet_job", "_auto_check"):
+            job = getattr(self, attr, None)
+            setattr(self, attr, None)
+            if job is not None:
+                try:
+                    self.root.after_cancel(job)
+                except Exception:
+                    pass
+        target, self._dnd = getattr(self, "_dnd", None), None
+        if target is not None:
             try:
-                self.root.after_cancel(job)
+                target.close()
             except Exception:
                 pass
 
@@ -287,6 +317,24 @@ class App:
                         bordercolor=pal["card_soft"], arrowcolor=pal["text_muted"],
                         arrowsize=theme.px(12), width=theme.px(11))
         style.map("Vertical.TScrollbar", background=[("active", pal["text_faint"])])
+        style.configure("TCombobox", fieldbackground=pal["card_soft"],
+                        background=pal["card_soft"], foreground=pal["text"],
+                        arrowcolor=pal["text_muted"], bordercolor=pal["border"],
+                        lightcolor=pal["border"], darkcolor=pal["border"],
+                        padding=(theme.px(6), theme.px(4)))
+        style.map("TCombobox",
+                  fieldbackground=[("readonly", pal["card_soft"]),
+                                    ("disabled", pal["card"])],
+                  foreground=[("readonly", pal["text"]),
+                              ("disabled", pal["text_faint"])],
+                  selectbackground=[("readonly", pal["accent_soft"])],
+                  selectforeground=[("readonly", pal["text"])])
+        for option, value in (("background", pal["card"]),
+                              ("foreground", pal["text"]),
+                              ("selectBackground", pal["accent_soft"]),
+                              ("selectForeground", pal["accent"]),
+                              ("font", theme.font(10))):
+            self.root.option_add("*TCombobox*Listbox." + option, value)
 
     # -- shell (wallpaper + rail) --------------------------------------
     def _build_shell(self):
@@ -295,17 +343,30 @@ class App:
         self.canvas.pack(fill="both", expand=True)
         self.bg_item = self.canvas.create_image(0, 0, anchor="nw")
 
+        # A page taller than the window gets a slim scroll indicator; without
+        # one the settings page just looked cut off at the bottom.
+        self.page_scroll = tk.Canvas(self.canvas, width=theme.px(6), bg=pal["window"],
+                                     highlightthickness=0, bd=0)
+        self.page_scroll_thumb = self.page_scroll.create_rectangle(
+            0, 0, 0, 0, fill=pal["text_faint"], outline="")
+        self.page_scroll.bind("<Button-1>", self._on_scroll_drag)
+        self.page_scroll.bind("<B1-Motion>", self._on_scroll_drag)
+        self._scroll_geom = (1, 1)
+
         self.rail = tk.Frame(self.canvas, bg=pal["rail"], bd=0, highlightthickness=0)
         self.rail_line = tk.Frame(self.canvas, bg=pal["border"], bd=0, highlightthickness=0)
 
         brand = tk.Frame(self.rail, bg=pal["rail"])
-        brand.pack(fill="x", padx=theme.px(16), pady=(theme.px(22), theme.px(18)))
+        brand.pack(fill="x", padx=theme.px(14), pady=(theme.px(22), theme.px(18)))
         self._brand_icon(brand)
         text_box = tk.Frame(brand, bg=pal["rail"])
-        text_box.pack(side="left", padx=(theme.px(12), theme.px(0)))
-        label(text_box, self, theme.APP_NAME, size=10, weight="bold", bg="rail").pack(anchor="w")
-        label(text_box, self, theme.APP_SUBTITLE, size=8, color="text_muted",
-              bg="rail").pack(anchor="w", pady=(theme.px(1), theme.px(0)))
+        text_box.pack(side="left", padx=(theme.px(10), theme.px(0)))
+        self._brand_title = label(text_box, self, theme.APP_NAME, size=10, weight="bold",
+                                  bg="rail")
+        self._brand_title.pack(anchor="w")
+        self._brand_sub = label(text_box, self, theme.APP_SUBTITLE, size=8,
+                                color="text_muted", bg="rail")
+        self._brand_sub.pack(anchor="w", pady=(theme.px(1), theme.px(0)))
 
         nav = tk.Frame(self.rail, bg=pal["rail"])
         nav.pack(fill="x", padx=theme.px(14))
@@ -327,7 +388,7 @@ class App:
 
     def _brand_icon(self, parent):
         pal = self.pal
-        size = theme.px(42)
+        size = theme.px(38)
         box = tk.Canvas(parent, width=size, height=size, bg=pal["rail"],
                         highlightthickness=0, bd=0)
         box.pack(side="left")
@@ -352,87 +413,52 @@ class App:
     def _build_task_page(self):
         pal = self.pal
 
-        overview = RoundCard(self)
-        ob = overview.body
-        stats = tk.Frame(ob, bg=pal["card"])
-        stats.pack(fill="x")
-        self.stat_labels = {}
-        tiles = (("game_key", "游戏内 key"), ("last_import", "上次导入"),
-                 ("accounts", "账号"), ("backups", "备份"))
-        for index, (key, title) in enumerate(tiles):
-            cell = tk.Frame(stats, bg=pal["card_sunken"])
-            cell.pack(side="left", expand=True, fill="x",
-                      padx=(theme.px(0), theme.px(0) if index == len(tiles) - 1
-                            else theme.px(8)))
-            label(cell, self, title, size=8, color="text_muted").pack(
-                anchor="w", padx=theme.px(10), pady=(theme.px(7), theme.px(0)))
-            value = label(cell, self, "—", size=11, weight="bold")
-            value.pack(anchor="w", padx=theme.px(10), pady=(theme.px(0), theme.px(7)))
-            self.stat_labels[key] = value
+        card = RoundCard(self)
+        self._task_card = card
+        body = card.body
 
-        device_card = RoundCard(self)
-        self._device_card = device_card
-        body = device_card.body
-        head = SectionTitle.build(self, body, "① 选择设备", "USB 连接手机，或先启动模拟器")
+        head = tk.Frame(body, bg=pal["card"])
         head.pack(fill="x")
-        right = tk.Frame(head, bg=pal["card"])
-        right.pack(side="right", padx=(theme.px(14), theme.px(0)))
-        self.game_seg = Segmented(self, right, [(g.id, g.label) for g in game.GAMES],
+        self.game_seg = Segmented(self, head, [(g.id, g.label) for g in game.GAMES],
                                   active=self.active_game.id, command=self.switch_game)
-        self.game_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
-        self.adb_chip = chip(right, self, "正在检测 adb…", tone="muted")
-        self.adb_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
-
-        summary = tk.Frame(body, bg=pal["card"])
-        summary.pack(fill="x", pady=(theme.px(12), theme.px(0)))
-        label(summary, self, "当前设备", size=9, color="text_muted").pack(side="left")
-        self.cur_dev_name = label(summary, self, "正在查找设备…", size=11, weight="bold")
-        self.cur_dev_name.pack(side="left", padx=(theme.px(8), theme.px(8)))
-        self.cur_dev_chip = chip(summary, self, "未连接", tone="muted")
-        self.cur_dev_chip.pack(side="left")
-        self.cur_dev_note = label(summary, self, "", size=9, color="text_faint")
-        self.cur_dev_note.pack(side="left", padx=(theme.px(10), theme.px(0)))
+        self.game_seg.pack(side="left")
+        self.adb_chip = label(head, self, "正在检测 adb…", size=9, color="text_muted")
+        self.adb_chip.pack(side="right")
 
         self.reconcile_bar = tk.Frame(body, bg=pal["warn_soft"])
         inner = tk.Frame(self.reconcile_bar, bg=pal["warn_soft"])
-        inner.pack(fill="x", padx=theme.px(14), pady=theme.px(10))
+        inner.pack(fill="x", padx=theme.px(12), pady=theme.px(8))
         self.reconcile_text = label(inner, self, "", size=9, color="warn", bg="warn_soft")
         self.reconcile_text.pack(side="left")
         PillButton(self, inner, "不用管", command=self.dismiss_reconcile, kind="ghost",
-                   width=72, height=28, bg="warn_soft").pack(side="right")
+                   width=70, height=28, bg="warn_soft").pack(side="right")
         PillButton(self, inner, "存到账号库", command=self.save_reconcile_entry, kind="primary",
-                   width=104, height=28).pack(side="right", padx=(theme.px(0), theme.px(8)))
+                   width=100, height=28).pack(side="right", padx=(theme.px(0), theme.px(8)))
         PillButton(self, inner, "更新已有账号", command=self.update_reconcile_entry, kind="soft",
-                   width=110, height=28, bg="warn_soft").pack(side="right", padx=(theme.px(0), theme.px(8)))
+                   width=106, height=28, bg="warn_soft").pack(side="right", padx=(theme.px(0), theme.px(8)))
 
-        self.device_list = DeviceList(self, body, command=self._on_device_row)
+        pick = tk.Frame(body, bg=pal["card"])
+        pick.pack(fill="x", pady=(theme.px(18), theme.px(0)))
+        label(pick, self, "设备", size=10, weight="bold").pack(
+            side="left", padx=(theme.px(0), theme.px(10)))
+        self.btn_refresh_device = PillButton(self, pick, "刷新", command=self.scan_emulators,
+                                             kind="ghost", width=58, height=34)
+        self.btn_refresh_device.pack(side="right")
+        PillButton(self, pick, "连接设置", command=self.open_connect_settings, kind="ghost",
+                   width=88, height=34).pack(side="right", padx=(theme.px(0), theme.px(8)))
+        self.device_list = DeviceList(self, pick, command=self._on_device_row)
         self.tree_box = self.device_list
-        self.device_list.pack(fill="both", expand=True, pady=(theme.px(10), theme.px(0)))
+        self.device_list.pack(side="left", fill="x", expand=True)
 
-        connect_row = tk.Frame(body, bg=pal["card"])
-        connect_row.pack(fill="x", pady=(theme.px(10), theme.px(0)))
-        PillButton(self, connect_row, "扫描模拟器", command=self.scan_emulators, kind="ghost",
-                   width=92, height=30).pack(side="left", padx=(theme.px(0), theme.px(6)))
-        PillButton(self, connect_row, "刷新", command=self.refresh_devices, kind="ghost",
-                   width=64, height=30).pack(side="left", padx=(theme.px(0), theme.px(14)))
-        label(connect_row, self, "连接地址", size=9, color="text_muted").pack(side="left")
-        self.addr_var = tk.StringVar()
-        self.addr_entry = entry(connect_row, self, self.addr_var, width=22)
-        self.addr_entry.pack(side="left", padx=(theme.px(10), theme.px(8)), ipady=theme.px(4))
-        self.addr_entry.bind("<Return>", lambda _e: self.connect_address())
-        PillButton(self, connect_row, "连接", command=self.connect_address, kind="ghost",
-                   width=64, height=30).pack(side="left")
-        label(connect_row, self, "例 127.0.0.1:16384，也可以只填端口号", size=9,
-              color="text_faint").pack(side="left", padx=(theme.px(10), theme.px(0)))
+        info = tk.Frame(body, bg=pal["card"])
+        info.pack(fill="x", pady=(theme.px(8), theme.px(0)))
+        self.dev_detail = label(info, self, "正在查找设备…", size=9, color="text_muted")
+        self.dev_detail.pack(side="left")
+        self.device_hint = label(info, self, "", size=9, color="text_faint")
+        self.device_hint.pack(side="right")
 
-        self.device_hint = label(body, self, "正在检测设备…", size=9, color="text_muted")
-        self.device_hint.pack(anchor="w", pady=(theme.px(8), theme.px(0)))
-
-        action_card = RoundCard(self)
-        body = action_card.body
-        SectionTitle.build(self, body, "② 提取与导入", "提取会把 key 存进账号库并导出到保存文件夹").pack(fill="x")
         row = tk.Frame(body, bg=pal["card"])
-        row.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        row.pack(fill="x", pady=(theme.px(18), theme.px(0)))
         self.btn_extract = PillButton(self, row, "提取 %s 的 key" % self.active_game.label,
                                       command=self.do_extract,
                                       kind="primary", width=196, height=44,
@@ -450,54 +476,83 @@ class App:
         save_row.pack(fill="x", pady=(theme.px(14), theme.px(0)))
         label(save_row, self, "保存文件夹", size=9, color="text_muted").pack(side="left")
         self.save_dir_var = tk.StringVar(value=self.save_dir or "未选择（提取后会自动导出到该文件夹）")
-        self.save_entry = entry(save_row, self, self.save_dir_var, width=40)
-        self.save_entry.configure(state="readonly", readonlybackground=pal["card_soft"])
-        self.save_entry.pack(side="left", fill="x", expand=True, padx=(theme.px(10), theme.px(10)), ipady=theme.px(5))
-        PillButton(self, save_row, "选择文件夹", command=self.choose_save_dir, kind="ghost",
-                   width=98, height=32).pack(side="left", padx=(theme.px(0), theme.px(8)))
+        # Buttons first: a packed fill+expand entry would otherwise eat the
+        # whole row and squeeze them down to a sliver.
         PillButton(self, save_row, "打开", command=self.open_save_dir, kind="ghost",
-                   width=62, height=32).pack(side="left")
+                   width=62, height=32).pack(side="right")
+        PillButton(self, save_row, "选择文件夹", command=self.choose_save_dir, kind="ghost",
+                   width=98, height=32).pack(side="right", padx=(theme.px(0), theme.px(8)))
+        self.save_entry = entry(save_row, self, self.save_dir_var, width=32)
+        self.save_entry.configure(state="readonly", readonlybackground=pal["card_soft"])
+        self.save_entry.pack(side="left", fill="x", expand=True,
+                             padx=(theme.px(10), theme.px(10)), ipady=theme.px(5))
 
-        hint = label(body, self, "① 选设备 → ② 提取 key → ③ 换号时选中账号导入（导入前自动备份当前 key）",
+        stats = tk.Frame(body, bg=pal["card"])
+        stats.pack(fill="x", pady=(theme.px(16), theme.px(0)))
+        self.stat_labels = {}
+        tiles = (("game_key", "游戏内 key"), ("last_import", "上次导入"),
+                 ("accounts", "账号"), ("backups", "备份"))
+        for index, (key, title) in enumerate(tiles):
+            if index:
+                label(stats, self, "·", size=9, color="text_faint").pack(
+                    side="left", padx=theme.px(10))
+            label(stats, self, title, size=9, color="text_muted").pack(side="left")
+            value = label(stats, self, "—", size=10, weight="bold")
+            value.pack(side="left", padx=(theme.px(6), theme.px(0)))
+            self.stat_labels[key] = value
+
+        hint = label(body, self, "换号：在账号库里选中要用的账号再点导入，导入前会自动备份当前 key",
                      size=9, color="text_faint")
         hint.pack(anchor="w", pady=(theme.px(10), theme.px(0)))
 
-        self.pages["tasks"] = [(overview, max(theme.px(96), overview.required_height())),
-                               (device_card, self._device_card_height),
-                               (action_card, max(theme.px(208), action_card.required_height()))]
+        recent = RoundCard(self)
+        self._recent_card = recent
+        rb = recent.body
+        SectionTitle.build(self, rb, "最近导入", "换号记录，最多 5 条").pack(fill="x")
+        self.recent_box = tk.Frame(rb, bg=pal["card"])
+        self.recent_box.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        self.recent_rows = []
+        self.recent_empty = label(self.recent_box, self, "还没有导入记录", size=9,
+                                  color="text_faint")
+        self.recent_empty.pack(anchor="w")
+
+        self.pages["tasks"] = [(card, self._task_card_height), (recent, None)]
 
     # -- page: vault ---------------------------------------------------
     def _build_vault_page(self):
         pal = self.pal
         card = RoundCard(self)
         body = card.body
-        head = SectionTitle.build(self, body, "账号库", "选中后可以导入、复制或导出")
-        head.pack(fill="x")
-        right = tk.Frame(head, bg=pal["card"])
-        right.pack(side="right", padx=(theme.px(14), theme.px(0)))
-        self.kind_seg = Segmented(self, right, [("account", "账号"), ("backup", "备份")],
+        self.vault_toolbars = []
+        SectionTitle.build(self, body, "账号库",
+                           "选中后可以导入、复制或导出 · F2 直接改名").pack(fill="x")
+
+        # Row 1: kind switch, count and the search box each get their own
+        # space, so the search field is never squeezed to nothing.
+        head = tk.Frame(body, bg=pal["card"])
+        head.pack(fill="x", pady=(theme.px(12), theme.px(0)))
+        self.kind_seg = Segmented(self, head, [("account", "账号"), ("backup", "备份")],
                                   active=self.vault_kind, command=self.switch_vault_kind)
-        self.kind_seg.pack(side="left", padx=(theme.px(0), theme.px(10)))
-        self.count_chip = chip(right, self, "0 个账号", tone="muted")
-        self.count_chip.pack(side="left", padx=(theme.px(0), theme.px(10)))
-        label(right, self, "搜索", size=9, color="text_muted").pack(side="left")
+        self.kind_seg.pack(side="left")
+        self.count_chip = chip(head, self, "0 个账号", tone="muted")
+        self.count_chip.pack(side="left", padx=(theme.px(10), theme.px(0)))
         self.search_var = tk.StringVar()
         self.search_var.trace_add("write", lambda *a: self.refresh_vault())
-        search = entry(right, self, self.search_var, width=22)
-        search.pack(side="left", padx=(theme.px(8), theme.px(0)), ipady=theme.px(4))
+        self.vault_search = entry(head, self, self.search_var, width=20)
+        self.vault_search.pack(side="right", ipady=theme.px(4))
+        label(head, self, "搜索", size=9, color="text_muted").pack(
+            side="right", padx=(theme.px(0), theme.px(8)))
+        self.vault_toolbars.append(head)
 
         bulk_bar = tk.Frame(body, bg=pal["card"])
-        bulk_bar.pack(fill="x", pady=(theme.px(12), theme.px(0)))
-        PillButton(self, bulk_bar, "批量导入文件夹", command=self.import_folder, kind="ghost",
-                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
-        PillButton(self, bulk_bar, "从剪贴板导入", command=self.import_clipboard, kind="ghost",
-                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
-        PillButton(self, bulk_bar, "打包导出全部", command=self.export_bundle, kind="ghost",
-                   width=118, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
-        PillButton(self, bulk_bar, "局域网传输", command=self.open_lan_share, kind="ghost",
-                   width=106, height=32).pack(side="left")
-        label(bulk_bar, self, "扫描子文件夹里的 auth.xml / *.txt", size=9,
-              color="text_muted").pack(side="right", padx=(theme.px(10), theme.px(0)))
+        bulk_bar.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        for text, command in (("批量导入文件夹", self.import_folder),
+                              ("从剪贴板导入", self.import_clipboard),
+                              ("打包导出全部", self.export_bundle),
+                              ("局域网传输", self.open_lan_share)):
+            PillButton(self, bulk_bar, text, command=command, kind="ghost",
+                       width=34, height=32).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        self.vault_toolbars.append(bulk_bar)
 
         keep_bar = tk.Frame(body, bg=pal["card"])
         keep_bar.pack(fill="x", pady=(theme.px(8), theme.px(0)))
@@ -512,8 +567,9 @@ class App:
         self.vault_history_label.pack(side="left", padx=(theme.px(14), theme.px(0)))
         self.btn_undo_import = PillButton(self, keep_bar, "撤销上次导入",
                                           command=self.undo_last_import, kind="ghost",
-                                          width=104, height=28)
+                                          width=34, height=28)
         self.btn_undo_import.pack(side="right")
+        self.vault_toolbars.append(keep_bar)
 
         tree_box = tk.Frame(body, bg=pal["card"])
         tree_box.pack(fill="both", expand=True, pady=(theme.px(12), theme.px(0)))
@@ -529,31 +585,41 @@ class App:
         vsb.pack(side="right", fill="y", padx=(theme.px(6), theme.px(0)))
         self.vault_tree.configure(yscrollcommand=vsb.set)
         self.vault_tree.tag_configure("odd", background=pal["card_sunken"])
+        self.vault_tree.tag_configure("flash", background=pal["accent_soft"],
+                                      foreground=pal["accent"])
         self.vault_tree.bind("<Double-1>", lambda e: self.show_key())
+        self.vault_tree.bind("<F2>", self._on_vault_f2)
         self.vault_tree.bind("<<TreeviewSelect>>", lambda e: self._update_vault_actions())
 
         divider = tk.Frame(body, bg=pal["border_soft"], height=theme.px(1))
         divider.pack(fill="x", pady=(theme.px(14), theme.px(12)))
 
+        # Two action rows: eight buttons on one line never fit 774px and the
+        # captions used to be clipped into each other.
         toolbar = tk.Frame(body, bg=pal["card"])
         toolbar.pack(fill="x")
         self.btn_rename = PillButton(self, toolbar, "重命名", command=self.rename_entry,
-                                       kind="ghost", width=84, height=34)
+                                     kind="ghost", width=78, height=34)
         self.btn_rename.pack(side="left", padx=(theme.px(0), theme.px(6)))
         self.btn_note = PillButton(self, toolbar, "编辑备注", command=self.edit_note,
-                                   kind="ghost", width=84, height=34)
+                                   kind="ghost", width=78, height=34)
         self.btn_note.pack(side="left", padx=(theme.px(0), theme.px(6)))
-        actions = (("复制 Key", self.copy_key, "ghost"),
-                   ("显示 Key", self.show_key, "ghost"),
-                   ("生成二维码", self.show_qr, "ghost"),
-                   ("存到文件夹", self.export_selected_to_dir, "ghost"),
-                   ("导出 .hak", self.export_hak, "ghost"),
-                   ("导入 .hak", self.import_hak, "ghost"))
-        for text, command, kind in actions:
-            PillButton(self, toolbar, text, command=command, kind=kind,
-                       width=84, height=34).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        for text, command in (("复制 Key", self.copy_key), ("显示 Key", self.show_key)):
+            PillButton(self, toolbar, text, command=command, kind="ghost",
+                       width=78, height=34).pack(side="left", padx=(theme.px(0), theme.px(6)))
         PillButton(self, toolbar, "删除", command=self.delete_entry, kind="danger",
-                   width=72, height=34).pack(side="right")
+                   width=70, height=34).pack(side="right")
+        self.vault_toolbars.append(toolbar)
+
+        toolbar2 = tk.Frame(body, bg=pal["card"])
+        toolbar2.pack(fill="x", pady=(theme.px(6), theme.px(0)))
+        for text, command in (("生成二维码", self.show_qr),
+                              ("存到文件夹", self.export_selected_to_dir),
+                              ("导出 .hak", self.export_hak),
+                              ("导入 .hak", self.import_hak)):
+            PillButton(self, toolbar2, text, command=command, kind="ghost",
+                       width=78, height=34).pack(side="left", padx=(theme.px(0), theme.px(6)))
+        self.vault_toolbars.append(toolbar2)
 
         self.pages["vault"] = [(card, None)]
 
@@ -563,14 +629,42 @@ class App:
 
         conn_card = RoundCard(self)
         cb = conn_card.body
-        SectionTitle.build(self, cb, "连接",
-                           "扫描哪些端口、要不要自动连；具体用哪台设备在任务页点选").pack(fill="x")
+        SectionTitle.build(self, cb, "连接", "选模拟器或填地址，任务页用这里连上的设备").pack(fill="x")
+
+        line = tk.Frame(cb, bg=pal["card"])
+        line.pack(fill="x", pady=(theme.px(14), theme.px(0)))
+        label(line, self, "连接配置", size=10, weight="bold").pack(
+            side="left", padx=(theme.px(0), theme.px(10)))
+        self.connect_profile = ttk.Combobox(
+            line, state="readonly", font=theme.font(10), width=20,
+            values=[text for _key, text, _addr in CONNECT_PROFILES])
+        saved = self.settings.get("connect_profile") or "auto"
+        self.connect_profile.current(next(
+            (i for i, (key, _t, _a) in enumerate(CONNECT_PROFILES) if key == saved), 0))
+        self.connect_profile.pack(side="left")
+        self.connect_profile.bind("<<ComboboxSelected>>", self._on_connect_profile)
+        self.btn_rescan = PillButton(self, line, "重新扫描", command=self.scan_emulators,
+                                     kind="ghost", width=92, height=32)
+        self.btn_rescan.pack(side="right")
+
+        addr = tk.Frame(cb, bg=pal["card"])
+        addr.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        label(addr, self, "连接地址", size=10, weight="bold").pack(
+            side="left", padx=(theme.px(0), theme.px(10)))
+        self.btn_get_device = PillButton(self, addr, "获取设备", command=self.connect_address,
+                                        kind="soft", width=96, height=32)
+        self.btn_get_device.pack(side="right")
+        self.addr_var = tk.StringVar()
+        self.addr_entry = entry(addr, self, self.addr_var, width=20)
+        self.addr_entry.pack(side="left", fill="x", expand=True,
+                             padx=(theme.px(0), theme.px(8)), ipady=theme.px(4))
+        self.addr_entry.bind("<Return>", lambda _e: self.connect_address())
+        label(cb, self, "多开时端口不同：填 127.0.0.1:端口，也可以只填端口", size=9,
+              color="text_faint").pack(anchor="w", pady=(theme.px(6), theme.px(0)))
 
         line = tk.Frame(cb, bg=pal["card"])
         line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
         label(line, self, "只显示模拟器", size=10, weight="bold").pack(side="left")
-        label(line, self, "隐藏 USB 接的手机，只看模拟器", size=9,
-              color="text_muted").pack(side="left", padx=(theme.px(10), theme.px(0)))
         self.only_emu_seg = Segmented(
             self, line, [("off", "关"), ("on", "开")],
             active="on" if self.settings.get("only_emulators") else "off",
@@ -578,10 +672,8 @@ class App:
         self.only_emu_seg.pack(side="right")
 
         line = tk.Frame(cb, bg=pal["card"])
-        line.pack(fill="x", pady=(theme.px(10), theme.px(0)))
+        line.pack(fill="x", pady=(theme.px(8), theme.px(0)))
         label(line, self, "启动时自动连接", size=10, weight="bold").pack(side="left")
-        label(line, self, "打开软件就扫描一遍模拟器端口", size=9,
-              color="text_muted").pack(side="left", padx=(theme.px(10), theme.px(0)))
         self.auto_connect_seg = Segmented(
             self, line, [("off", "关"), ("on", "开")],
             active="on" if self.settings.get("auto_connect") else "off",
@@ -590,18 +682,17 @@ class App:
 
         line = tk.Frame(cb, bg=pal["card"])
         line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
-        label(line, self, "模拟器端口", size=10, weight="bold").pack(side="left")
-        label(line, self, "MuMu 16384 · 夜神 62001 · 雷电 5555/5557 · 蓝叠 5555",
-              size=9, color="text_faint").pack(side="left", padx=(theme.px(10), 0))
-        self.btn_rescan = PillButton(self, line, "重新扫描", command=self.scan_emulators,
-                                     kind="ghost", width=92, height=30)
-        self.btn_rescan.pack(side="right")
+        label(line, self, "扫描端口", size=10, weight="bold").pack(side="left")
+        self.btn_edit_ports = PillButton(self, line, "编辑", command=self.edit_scan_ports,
+                                         kind="ghost", width=62, height=28)
+        self.btn_edit_ports.pack(side="right")
+        # A 14-port list never fits one line; show a short summary instead and
+        # edit the whole list in the themed dialog.
         self.ports_var = tk.StringVar(value=self.settings.get("emulator_ports") or "")
-        self.ports_entry = entry(cb, self, textvariable=self.ports_var, width=34,
-                                 bg="card_soft")
-        self.ports_entry.pack(fill="x", pady=(theme.px(8), theme.px(0)), ipady=theme.px(4))
-        self.ports_entry.bind("<Return>", lambda _e: self._on_ports_change())
-        self.ports_entry.bind("<FocusOut>", lambda _e: self._on_ports_change())
+        self.ports_summary = label(line, self, "", size=9, color="text_muted")
+        self.ports_summary.pack(side="left", padx=(theme.px(10), theme.px(10)),
+                                fill="x", expand=True)
+        self._update_ports_summary()
 
         line = tk.Frame(cb, bg=pal["card"])
         line.pack(fill="x", pady=(theme.px(12), theme.px(0)))
@@ -721,6 +812,10 @@ class App:
             value = label(line, self, "-", size=9, color="text")
             value.pack(side="left", padx=(theme.px(6), theme.px(0)))
             self.data_rows[key] = value
+        label(db, self, "「保存位置」既是提取时的导出目录，也是「打包导出全部」的 zip 落点"
+                        "（每个游戏一个子文件夹）",
+              size=9, color="text_faint", wraplength=theme.px(520)).pack(
+            anchor="w", fill="x", pady=(theme.px(6), theme.px(0)))
         about_line = tk.Frame(db, bg=pal["card"])
         about_line.pack(fill="x", pady=(theme.px(7), theme.px(0)))
         label(about_line, self, "关于", size=9, color="text_muted", width=10,
@@ -808,16 +903,11 @@ class App:
         """Page specs may carry a fixed height or a callable that measures it."""
         return spec() if callable(spec) else spec
 
-    def _device_card_height(self):
-        card = getattr(self, "_device_card", None)
+    def _task_card_height(self):
+        card = getattr(self, "_task_card", None)
         if card is None:
-            return theme.px(268)
-        return max(theme.px(268), card.required_height())
-
-    def _device_list_resized(self):
-        """Grow/shrink the device card when the list changes length."""
-        if getattr(self, "_device_card", None) is not None:
-            self._relayout()
+            return theme.px(320)
+        return max(theme.px(300), card.required_height())
 
     def _relayout(self):
         width = self.canvas.winfo_width()
@@ -856,6 +946,7 @@ class App:
         if not log_visible:
             self.log_card.place_forget()
 
+        self._place_page_scrollbar(width, page_pad, top_area, overflow, offset, log_h, log_visible)
         self.rail.place(x=0, y=0, width=rail_w, relheight=1)
         self.rail_line.place(x=rail_w - 1, y=0, width=theme.px(1), relheight=1)
         x0 = rail_w + page_pad
@@ -882,6 +973,30 @@ class App:
                 card_h = self._spec_height(h) or fill_h
                 card.layout(x0, y, content_w, card_h)
                 y += card_h + gap
+
+    def _place_page_scrollbar(self, width, page_pad, top_area, overflow, offset,
+                              log_h, log_visible):
+        if overflow <= 0 or top_area <= theme.px(80):
+            self.page_scroll.place_forget()
+            return
+        track_h = top_area
+        bar_w = theme.px(6)
+        thumb_h = max(theme.px(36), int(round(track_h * track_h / float(track_h + overflow))))
+        span = max(1, track_h - thumb_h)
+        thumb_y = int(round(span * offset / float(overflow)))
+        self._scroll_geom = (track_h, thumb_h)
+        self.page_scroll.coords(self.page_scroll_thumb, 0, thumb_y, bar_w, thumb_y + thumb_h)
+        self.page_scroll.place(x=width - page_pad - bar_w, y=page_pad,
+                               width=bar_w, height=track_h)
+
+    def _on_scroll_drag(self, event):
+        if self._overflow <= 0:
+            return
+        track_h, thumb_h = self._scroll_geom
+        span = max(1, track_h - thumb_h)
+        ratio = max(0.0, min(1.0, (event.y - thumb_h / 2.0) / span))
+        self._scroll[self.page] = int(round(ratio * self._overflow))
+        self._relayout()
 
     def refresh_visuals(self):
         width = self.canvas.winfo_width()
@@ -945,6 +1060,10 @@ class App:
         self._relayout()
         self.refresh_visuals()
 
+    def open_connect_settings(self):
+        """Jump from the task page to the connection card in Settings."""
+        self._show_page("settings")
+
     def open_repo(self):
         try:
             webbrowser.open(theme.REPO_URL)
@@ -981,11 +1100,9 @@ class App:
                 self.refresh_devices()
 
     def _set_adb_chip(self, text, tone):
-        tones = {"ok": ("ok_soft", "ok"), "err": ("err_soft", "err"),
-                 "muted": ("card_soft", "text_muted"), "warn": ("warn_soft", "warn")}
-        bg, fg = tones.get(tone, tones["muted"])
+        tones = {"ok": "ok", "err": "err", "warn": "warn"}
         try:
-            self.adb_chip.configure(text=text, bg=self.pal[bg], fg=self.pal[fg])
+            self.adb_chip.configure(text=text, fg=self.pal[tones.get(tone, "text_muted")])
         except Exception:
             pass
 
@@ -1196,19 +1313,6 @@ class App:
     def _auto_update_check(self):
         self._auto_check = None
         self.check_update(manual=False)
-
-    def _on_destroy(self, event=None):
-        """Cancel queued callbacks so destroyed tests do not hit dead Tcl commands."""
-        if event is not None and getattr(event, "widget", None) is not self.root:
-            return
-        for name in ("_auto_check", "_poll_after", "_first_job"):
-            pending = getattr(self, name, None)
-            setattr(self, name, None)
-            if pending:
-                try:
-                    self.root.after_cancel(pending)
-                except Exception:
-                    pass
 
     @staticmethod
     def _update_error_text(exc):
@@ -1573,21 +1677,16 @@ class App:
     def _refresh_current_device(self):
         dev = self.selected_device()
         if dev is None:
-            self.cur_dev_name.configure(text="没有可用设备")
-            self._paint_chip(self.cur_dev_chip, "未连接", "muted")
-            self.cur_dev_note.configure(text="接上手机或启动模拟器后点「扫描模拟器」")
+            self.dev_detail.configure(text="没有可用设备，点「刷新」扫描，或到连接设置填地址")
             return
-        self.cur_dev_name.configure(text=dev.short_label)
-        self._paint_chip(self.cur_dev_chip, "在线" if dev.online else "离线",
-                         "ok" if dev.online else "err")
-        bits = [dev.serial]
+        bits = [dev.serial, "在线" if dev.online else "离线"]
         if dev.game_installed is True:
             bits.append("已装游戏")
         elif dev.game_installed is False:
             bits.append("未装游戏")
-        if dev.root == "\u662f":
+        if dev.root == "是":
             bits.append("Root")
-        self.cur_dev_note.configure(text=" \u00b7 ".join(bits))
+        self.dev_detail.configure(text=" · ".join(bits))
 
     # -- game switching ------------------------------------------------
     def switch_game(self, game_id):
@@ -1619,21 +1718,19 @@ class App:
     def _update_device_hint(self):
         try:
             if not self.devices:
-                self.device_hint.configure(
-                    text="没有发现设备。可以点「扫描模拟器」，或在下面填地址直接连。")
+                self.device_hint.configure(text="")
                 return
             online = sum(1 for dev in self.devices if dev.online)
-            text = ("已发现 %d 台设备（%d 台在线），点一行切换；提取、导入、启动游戏都用选中的那台"
-                    % (len(self.devices), online))
+            text = "共 %d 台 · %d 台在线" % (len(self.devices), online)
             if self.settings.get("only_emulators"):
                 hidden = [dev for dev in self.devices if not dev.is_emulator]
                 if hidden:
-                    text += "。已隐藏 %d 台 USB 设备（设置里可关）" % len(hidden)
+                    text += " · 已隐藏 %d 台 USB" % len(hidden)
             self.device_hint.configure(text=text)
         except Exception:
             pass
 
-    def _check_game_installed(self):
+    def _check_game_installed(self, quiet=False):
         """Probe every online row, so no device is stuck on 「检测游戏…」."""
         if not self.adb:
             return
@@ -1642,12 +1739,19 @@ class App:
             if not dev.online:
                 continue
             serial = dev.serial
+            token = (g.id, serial)
+            # A background poll must not re-probe devices we already know.
+            if quiet and dev.game_installed is not None:
+                continue
+            if token in self._probe and dev.game_installed is not None:
+                continue
 
-            def runner(serial=serial):
+            def runner(serial=serial, token=token):
                 try:
                     ok = game.game_installed(self.adb, serial, g)
                 except Exception:
                     ok = None
+                self._probe[token] = ok
                 self.root.after(0, self._installed_done, g.id, serial, ok)
 
             threading.Thread(target=runner, daemon=True).start()
@@ -1677,18 +1781,61 @@ class App:
                 self.log("设备", "%s 上没有安装 %s，换一台或先装好游戏"
                          % (dev.short_label, self.active_game.label))
 
-    def refresh_devices(self):
+    def refresh_devices(self, quiet=False):
         if not self.adb:
+            if quiet:
+                return
             # No modal here: this also runs on startup and after toggles.
             self._set_adb_chip("adb 不可用", "err")
             self.log("错误", "adb 不可用，请检查 platform-tools 是否放在 assets/platform-tools 下")
             return
+        if quiet:
+            # Polling never touches the busy flag, buttons or the log. The
+            # worker only stores its result; this (main) thread collects it,
+            # because root.after() is not safe from a worker thread.
+            self._quiet_pending = None
+            self._quiet_wait = 0
+            threading.Thread(target=self._quiet_refresh, daemon=True).start()
+            self._check_quiet(60)
+            return
         self._set_adb_chip("正在检测设备…", "muted")
         self._bg(self._devices_worker, self._devices_done)
 
-    def _devices_worker(self):
+    def _quiet_refresh(self):
+        try:
+            devices = self._devices_worker(quiet=True)
+        except Exception:
+            devices = None
+        if not self._closing:
+            self._quiet_pending = devices
+
+    def _check_quiet(self, delay=120):
+        """Main-thread collector for the background poll result."""
+        if self._closing:
+            return
+        pending = getattr(self, "_quiet_pending", None)
+        if pending is not None:
+            self._quiet_pending = None
+            self._devices_done(pending, True)
+            return
+        self._quiet_wait = getattr(self, "_quiet_wait", 0) + delay
+        if self._quiet_wait < 8000:
+            self._quiet_job = self.root.after(
+                delay, lambda: self._check_quiet(max(delay, 80)))
+
+    def _devices_worker(self, quiet=False):
+        if not self.adb:
+            return list(self.devices)
         devices = list(self.adb.devices())
+        known = {dev.serial: dev for dev in self.devices}
         for dev in devices:
+            previous = known.get(dev.serial)
+            if quiet and previous is not None:
+                # Keep answers we already have: a poll must not run
+                # `adb shell su` for every device every few seconds.
+                dev.root = previous.root
+                dev.game_installed = previous.game_installed
+                continue
             dev.root = "?"
             dev.game_installed = None
             if dev.online:
@@ -1698,12 +1845,15 @@ class App:
                     dev.root = "?"
         return devices
 
-    def _devices_done(self, devices):
+    def _devices_done(self, devices, quiet=False):
         self.devices = list(devices)
         only = bool(self.settings.get("only_emulators"))
         visible = [dev for dev in self.devices if not only or dev.is_emulator]
         try:
-            self.device_list.set_devices(visible, self._selected_serial)
+            if quiet:
+                self.device_list.update(visible, self._selected_serial)
+            else:
+                self.device_list.set_devices(visible, self._selected_serial)
         except Exception:
             pass
         pending = getattr(self, "_pending_select", "")
@@ -1711,37 +1861,87 @@ class App:
             self._pending_select = ""
             for dev in visible:
                 if dev.serial == pending:
-                    pick = dev
                     self.select_device(dev.serial, persist=True, refresh_reconcile=False)
                     break
             else:
-                pick = self._pick_device(visible)
-                if pick is not None:
-                    self.select_device(pick.serial, persist=False, refresh_reconcile=False)
-                else:
-                    self._selected_serial = ""
-                    self._refresh_current_device()
+                self._pick_and_apply(visible, quiet=quiet)
         else:
-            pick = self._pick_device(visible)
-            if pick is not None:
-                self.select_device(pick.serial, persist=False, refresh_reconcile=False)
-            else:
-                self._selected_serial = ""
-                self._refresh_current_device()
+            self._pick_and_apply(visible, quiet=quiet)
         online = sum(1 for dev in visible if dev.online)
         if visible:
             self._set_adb_chip("%d 台在线" % online if online else "%d 台离线" % len(visible),
                                "ok" if online else "warn")
-            self.log("设备", "发现 %d 台设备" % len(visible))
         else:
             self._set_adb_chip("未发现设备", "warn")
-            if self.devices:
+        if not quiet:
+            if visible:
+                self.log("设备", "发现 %d 台设备" % len(visible))
+            elif self.devices:
                 self.log("设备", "设备都被「只显示模拟器」过滤掉了，可以在设置里关掉")
             else:
                 self.log("设备", "没有发现设备。请打开 USB 调试，或先启动模拟器再点「扫描模拟器」。")
         self._update_device_hint()
-        self._check_game_installed()
-        self.refresh_reconcile()
+        self._check_game_installed(quiet=quiet)
+        if not quiet:
+            self.refresh_reconcile()
+
+    def _pick_and_apply(self, visible, quiet=False):
+        pick = None
+        if quiet:
+            # A blink offline must not steal the selection; stay on the
+            # device the user picked as long as it is still listed.
+            for dev in visible:
+                if dev.serial == self._selected_serial:
+                    pick = dev
+                    break
+        if pick is None:
+            pick = self._pick_device(visible)
+        if pick is not None:
+            self.select_device(pick.serial, persist=False, refresh_reconcile=False)
+        else:
+            self._selected_serial = ""
+            self._refresh_current_device()
+            self._apply_device_state(None)
+
+    # -- background poll -----------------------------------------------
+    # Nine seconds: fast enough that an emulator restart shows up while the
+    # user is still looking at the window, slow enough that adb is not
+    # hammered while they browse the vault.
+    POLL_MS = 9000
+
+    def _start_poll(self):
+        if self._closing:
+            return
+        self._poll_job = self.root.after(self.POLL_MS, self._poll_tick)
+
+    def _poll_tick(self):
+        self._poll_job = None
+        if self._closing:
+            return
+        try:
+            if self.adb and not self._busy:
+                self.refresh_devices(quiet=True)
+        except Exception:
+            pass
+        self._start_poll()
+
+    # -- drag & drop ---------------------------------------------------
+    def _install_drop_target(self):
+        try:
+            self._dnd = dnd.install(self.root, self.handle_dropped_files)
+        except Exception:
+            self._dnd = None
+
+    def handle_dropped_files(self, paths):
+        if self._closing:
+            return
+        picked = dnd.hak_paths(paths)
+        if not picked:
+            self.log("导入", "拖进来的不是 .hak 备份，没有导入")
+            return
+        self.log("导入", "拖入 %d 个 .hak 文件" % len(picked))
+        for path in picked:
+            self._import_hak_path(path)
 
     # -- emulator discovery --------------------------------------------
     @staticmethod
@@ -1759,6 +1959,28 @@ class App:
         raw = self.settings.get("emulator_ports") or ""
         return self._parse_ports(raw) or list(EMULATOR_PORTS)
 
+    def _update_ports_summary(self):
+        widget = getattr(self, "ports_summary", None)
+        if widget is None:
+            return
+        ports = self.emulator_ports()
+        head = ", ".join(str(port) for port in ports[:3])
+        if len(ports) > 3:
+            head += " …"
+        widget.configure(text="%d 个端口 · %s" % (len(ports), head))
+
+    def edit_scan_ports(self):
+        raw = self.ports_var.get() if getattr(self, "ports_var", None) is not None else ""
+        text = dialogs.ask_text(
+            self, "扫描端口", hint="逗号分隔；清空就恢复默认端口列表",
+            initial=raw, max_len=400, allow_empty=True)
+        if text is None:
+            return
+        if getattr(self, "ports_var", None) is None:
+            self.ports_var = tk.StringVar()
+        self.ports_var.set(text)
+        self._on_ports_change()
+
     def _on_ports_change(self):
         raw = self.ports_var.get() if getattr(self, "ports_var", None) is not None else ""
         ports = self._parse_ports(raw) or list(EMULATOR_PORTS)
@@ -1769,6 +1991,7 @@ class App:
                 self.ports_var.set(text)
         except Exception:
             pass
+        self._update_ports_summary()
         self.log("设置", "模拟器端口：%s" % text)
         return ports
 
@@ -1814,6 +2037,22 @@ class App:
             self.refresh_devices()
 
         self._bg(worker, done)
+
+    def _on_connect_profile(self, _event=None):
+        index = self.connect_profile.current()
+        if not (0 <= index < len(CONNECT_PROFILES)):
+            return
+        key, _text, address = CONNECT_PROFILES[index]
+        self.settings.set("connect_profile", key)
+        if key == "auto":
+            self.addr_var.set("")
+            self.scan_emulators()
+        elif address is None:
+            self.addr_var.set("")
+            self.addr_entry.focus_set()
+        else:
+            self.addr_var.set(address)
+            self.connect_address()
 
     def connect_address(self):
         raw = self.addr_var.get() if getattr(self, "addr_var", None) is not None else ""
@@ -1970,7 +2209,7 @@ class App:
                 cell("fingerprint", e.get("fingerprint", "")),
                 cell("source", self._source_label(e.get("source", ""))),
                 cell("created", e.get("created_at", ""))),
-                tags=("odd",) if index % 2 else ())
+                tags=self._vault_tags(e, index))
         self._refresh_import_history()
         self.refresh_overview()
         label_text = "账号" if self.vault_kind == "account" else "备份"
@@ -1983,6 +2222,12 @@ class App:
             self.count_chip.configure(text="%d 个%s · 共 %d" % (total, label_text, all_total),
                                      bg=self.pal["card_soft"], fg=self.pal["text_muted"])
         self._update_vault_actions()
+
+    def _vault_tags(self, entry, index):
+        tags = ("odd",) if index % 2 else ()
+        if getattr(self, "_flash_id", None) and entry.get("id") == self._flash_id:
+            tags = tags + ("flash",)
+        return tags
 
     def switch_vault_kind(self, kind):
         self.vault_kind = kind
@@ -2001,6 +2246,49 @@ class App:
                 button.set_enabled(not backup)
             except Exception:
                 pass
+
+    def _on_vault_f2(self, _event=None):
+        if self.vault_tree.selection():
+            self.rename_entry()
+        return "break"
+
+    def reveal_entry(self, entry_id, page=True):
+        """Show one entry: jump to the vault, select it and flash it briefly."""
+        if not entry_id:
+            return
+        self._flash_id = entry_id
+        if page and self.page != "vault":
+            self._show_page("vault")
+        self.refresh_vault()
+        try:
+            if self.vault_tree.exists(entry_id):
+                self.vault_tree.selection_set(entry_id)
+                self.vault_tree.focus(entry_id)
+                self.vault_tree.see(entry_id)
+        except Exception:
+            pass
+        job, self._flash_job = getattr(self, "_flash_job", None), None
+        if job is not None:
+            try:
+                self.root.after_cancel(job)
+            except Exception:
+                pass
+        self._flash_job = self.root.after(2600, lambda: self.clear_flash(entry_id))
+
+    def clear_flash(self, entry_id=None):
+        entry_id = entry_id or getattr(self, "_flash_id", None)
+        self._flash_job = None
+        if not entry_id:
+            return
+        if getattr(self, "_flash_id", None) == entry_id:
+            self._flash_id = None
+        try:
+            if self.vault_tree.exists(entry_id):
+                tags = [tag for tag in self.vault_tree.item(entry_id, "tags")
+                        if tag != "flash"]
+                self.vault_tree.item(entry_id, tags=tags)
+        except Exception:
+            pass
 
     def selected_entry(self):
         sel = self.vault_tree.selection()
@@ -2090,6 +2378,20 @@ class App:
         self.log("设备", "已忽略这次核对（以后不再提示这个 key）")
 
     # -- actions -------------------------------------------------------
+    def export_tip_shown(self):
+        try:
+            return max(0, int(self.settings.get("export_tip_shown", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _maybe_show_export_tip(self):
+        """前三次从游戏提取到 key：先读满 3 秒「这个 key 极其重要」再继续。"""
+        shown = self.export_tip_shown()
+        if shown >= 3:
+            return
+        self.settings.set("export_tip_shown", shown + 1)
+        dialogs.show_export_reminder(self, game_label=self.active_game.label)
+
     def do_extract(self):
         if not self._require(device=True, entry=False):
             return
@@ -2103,6 +2405,7 @@ class App:
 
         def done(result):
             key, source = result
+            self._maybe_show_export_tip()
             entry, created = self.vault.add(name="待命名账号", key=key, source=source,
                                              device=dev.serial, kind="account",
                                              game=self.active_game.id)
@@ -2116,8 +2419,7 @@ class App:
                     self.vault.update(entry["id"], name=name)
             else:
                 self.log("提取", "这个 key 已经在账号库里了：%s" % entry.get("name"))
-            self.refresh_vault()
-            self.vault_tree.selection_set(entry["id"])
+            self.reveal_entry(entry["id"])
             self.log("完成", "已保存 %s 账号，指纹 %s"
                      % (self.active_game.label, entry.get("fingerprint")))
             out = self.export_to_dir(entry.get("name"), key)
@@ -2220,24 +2522,28 @@ class App:
         if not self.vault.by_kind(kind):
             messagebox.showinfo(APP_TITLE, "这个分区还没有可以导出的%s。" % word)
             return
-        stamp = time.strftime("%Y%m%d-%H%M")
-        default = "%s-%s-%s.zip" % (self.active_game.id,
-                                    "accounts" if kind == "account" else "backups", stamp)
-        target = filedialog.asksaveasfilename(
-            title="打包导出全部%s" % word, parent=self.root, defaultextension=".zip",
-            initialdir=self.save_dir or config.app_dir(), initialfile=default,
-            filetypes=[("Zip 压缩包", "*.zip")])
-        if not target:
+        if not self.save_dir:
+            messagebox.showinfo(APP_TITLE, "还没选择保存位置。\n\n"
+                                           "到 设置 → 数据与存储 → 保存位置 选一个文件夹即可，"
+                                           "打包的 zip 会写进那里的游戏子文件夹。")
+            self._show_page("settings")
             return
+        g = self.active_game
+        folder = os.path.join(self.save_dir, self._safe_name(g.label))
+        stamp = time.strftime("%Y%m%d-%H%M")
+        target = os.path.join(folder, "%s-%s-%s.zip"
+                              % (g.id, "accounts" if kind == "account" else "backups", stamp))
         try:
-            count = bulk.export_all(self.vault, target, self.active_game.label, kind)
+            os.makedirs(folder, exist_ok=True)
+            count = bulk.export_all(self.vault, target, g.label, kind)
         except Exception as exc:
             self.log("错误", "打包导出失败：%s" % exc)
             messagebox.showerror(APP_TITLE, "打包导出失败：%s" % exc)
             return
         self.log("完成", "已打包 %d 个%s到 %s" % (count, word, target))
         messagebox.showinfo(APP_TITLE, "已导出 %d 个%s。\n\n%s\n\n"
-                                       "压缩包里每个%s一个文件夹（AuthKey.txt），另有 manifest.txt 清单。"
+                                       "压缩包里每个%s一个文件夹（AuthKey.txt），另有 manifest.txt 清单。\n"
+                                       "落点就是「设置 → 保存位置」里的游戏子文件夹，不用每次再问。"
                               % (count, word, target, word))
 
     # -- 局域网传输 -----------------------------------------------------
@@ -2373,7 +2679,36 @@ class App:
                               % ((last.get("at") or "")[5:16],
                                  (last.get("name") or "账号")[:16]))
 
+    def _refresh_recent_history(self):
+        box = getattr(self, "recent_box", None)
+        if box is None:
+            return
+        for row in getattr(self, "recent_rows", []):
+            row.destroy()
+        self.recent_rows = []
+        empty = getattr(self, "recent_empty", None)
+        items = []
+        if self.vault is not None:
+            items = bulk.import_history(self.settings, self.active_game.id, 5)
+        if not items:
+            if empty is not None:
+                empty.pack(anchor="w")
+            return
+        if empty is not None:
+            empty.pack_forget()
+        for item in items:
+            stamp = (item.get("at") or "")[5:16]
+            name = (item.get("name") or "账号")[:20]
+            fp = (item.get("fingerprint") or "")[:8]
+            text = "%s   %s" % (stamp, name)
+            if fp:
+                text += "   " + fp
+            row = label(box, self, text, size=9, color="text_muted")
+            row.pack(anchor="w", pady=(theme.px(4), theme.px(0)))
+            self.recent_rows.append(row)
+
     def refresh_overview(self):
+        self._refresh_recent_history()
         stats = getattr(self, "stat_labels", None)
         if not stats or not self.vault:
             return
@@ -2573,10 +2908,15 @@ class App:
         path = filedialog.askopenfilename(parent=self.root, filetypes=[("AuthKey 备份", "*.hak"), ("所有文件", "*.*")])
         if not path:
             return
+        self._import_hak_path(path)
+
+    def _import_hak_path(self, path):
+        """Import one .hak file (button or drag & drop)."""
         try:
             payload, key = self.vault.read_hak(path)
         except Exception as exc:
             messagebox.showerror(APP_TITLE, "导入失败：%s" % exc)
+            self.log("失败", "读取 %s 失败：%s" % (os.path.basename(path), exc))
             return
         self.show_received(key, payload.get("name") or "导入的账号", payload.get("note", ""))
 

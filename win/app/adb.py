@@ -60,6 +60,20 @@ class Device:
     model: str = ""
     product: str = ""
     transport: str = ""
+    root: str = "?"
+    game_installed: object = None   # None = 还没检测，True/False = 已检测
+
+    @property
+    def short_label(self):
+        """Name shown in buttons: "MuMu-12", "Pixel 7", "设备"."""
+        name = (self.model or self.product or "").strip()
+        if name:
+            return name
+        return "模拟器" if is_emulator_serial(self.serial) else "设备"
+
+    @property
+    def is_emulator(self):
+        return is_emulator_serial(self.serial)
 
     @property
     def label(self):
@@ -175,3 +189,30 @@ def parse_android_version(adb, serial):
         return adb.shell(serial, "getprop ro.build.version.release", timeout=10).strip()
     except AdbError:
         return ""
+
+
+def is_emulator_serial(serial):
+    """True for network devices (127.0.0.1:16384) and AVD style serials."""
+    text = (serial or "").strip()
+    if not text:
+        return False
+    return text.startswith("emulator-") or ":" in text
+
+
+def normalize_address(text, default_port=5555):
+    """Turn what a user types into a usable adb connect address.
+
+    "127.0.0.1", "127.0.0.1:16384", "16384" and "localhost:7555" all work.
+    Empty input stays empty so callers can treat it as "nothing typed".
+    """
+    raw = (text or "").strip().replace(" ", "")
+    if not raw:
+        return ""
+    if raw.isdigit():
+        return "127.0.0.1:%d" % int(raw)
+    if raw.count(":") == 1:
+        host, _, port = raw.partition(":")
+        if host and port.isdigit() and 0 < int(port) < 65536:
+            return "%s:%d" % (host, int(port))
+    raw = raw.rstrip(":")
+    return "%s:%d" % (raw, default_port)

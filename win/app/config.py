@@ -9,6 +9,10 @@ import shutil
 
 APP_FOLDER = "HousamoAuthKeyManager"
 
+# 常见模拟器的 adb 端口，按命中率排序；设置页可以改成自己的列表。
+EMULATOR_PORTS = [16384, 7555, 5555, 62001, 62025, 21503, 5557, 5559,
+                  5565, 16416, 16448, 58526, 7556, 62026]
+
 DEFAULTS = {
     "save_dir": "",
     "bg_image": "",
@@ -23,6 +27,15 @@ DEFAULTS = {
     "theme": "light",
     "capture_guard": False,
     "app_lock": {},
+    # 前三次从游戏提取到 key 后的强提醒，读过几次记在这里
+    "export_tip_shown": 0,
+    # 设备连接：记住上次用的设备、只看模拟器、启动时自动扫描、自定义端口
+    "preferred_serial": "",
+    "only_emulators": False,
+    "auto_connect": False,
+    "emulator_ports": ",".join(str(p) for p in EMULATOR_PORTS),
+    # 参考 MAA 的连接配置预设：auto / mumu / ld / nox / bst / custom
+    "connect_profile": "auto",
 }
 
 BG_BASENAME = "background"
@@ -71,7 +84,10 @@ class Settings:
             return
         for key, default in DEFAULTS.items():
             value = raw.get(key, default)
-            if isinstance(default, int) and not isinstance(value, bool):
+            if isinstance(default, bool):
+                if not isinstance(value, bool):
+                    value = default
+            elif isinstance(default, int) and not isinstance(value, bool):
                 try:
                     value = int(value)
                 except (TypeError, ValueError):

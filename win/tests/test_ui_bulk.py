@@ -72,14 +72,27 @@ class BulkUiTest(unittest.TestCase):
         self.assertIsNone(bulk.last_import(self.app.settings, self.app.active_game.id))
         self.assertEqual(self.app.vault_history_label.cget("text"), "还没有导入记录")
 
-    def test_export_bundle_writes_zip(self):
+    def test_export_bundle_writes_zip_into_save_dir(self):
+        folder = tempfile.mkdtemp()
+        self.app.save_dir = folder
         self.app.vault.add(name="导出我", key=KEY_A)
-        target = os.path.join(tempfile.mkdtemp(), "bundle.zip")
-        ui_mod.filedialog.asksaveasfilename = lambda *a, **k: target
         self.app.export_bundle()
-        self.assertTrue(os.path.exists(target))
-        with zipfile.ZipFile(target) as zf:
+        game_dir = os.path.join(folder, self.app._safe_name(self.app.active_game.label))
+        self.assertTrue(os.path.isdir(game_dir), "应写进保存位置里的游戏子文件夹")
+        zips = [f for f in os.listdir(game_dir) if f.endswith(".zip")]
+        self.assertEqual(len(zips), 1)
+        with zipfile.ZipFile(os.path.join(game_dir, zips[0])) as zf:
             self.assertIn("导出我/AuthKey.txt", zf.namelist())
+
+    def test_export_bundle_without_save_dir_goes_to_settings(self):
+        self.app.save_dir = ""
+        self.app.vault.add(name="导出我", key=KEY_A)
+        said = []
+        ui_mod.messagebox.showinfo = lambda *a, **k: said.append(a)
+        self.app.export_bundle()
+        self.assertTrue(said, "没设保存位置时要提示")
+        self.assertIn("保存位置", str(said[0]))
+        self.assertEqual(self.app.page, "settings", "提示后应跳到设置页")
 
     def test_backup_keep_policy_prunes_and_persists(self):
         for n in range(12):

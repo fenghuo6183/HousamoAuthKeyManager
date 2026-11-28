@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Publish this project to GitHub through the REST API (git transport is broken here)."""
 import base64
+import io
 import json
 import os
 import sys
@@ -13,7 +14,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOKEN_FILE = os.path.join(ROOT, ".tmp", "gh_token.txt")
 REPO = "HousamoAuthKeyManager"
 DESC = "一键提取 / 导入《东京放课后召唤师》AuthKey 的 Windows + Android 工具（免 root 优先，支持模拟器多开）"
-VERSION = "v1.0.0"
+def app_version():
+    env = os.environ.get("HAK_VERSION", "").strip()
+    if env:
+        return env.lstrip("vV")
+    theme = os.path.join(ROOT, "win", "app", "theme.py")
+    for line in io.open(theme, encoding="utf-8"):
+        if line.startswith("APP_VERSION"):
+            return line.split("=", 1)[1].strip().strip('"\'')
+    raise SystemExit("no APP_VERSION in " + theme)
+
+
+VERSION = "v" + app_version()
 
 SKIP_DIRS = {".git", ".tools", ".tmp", "__pycache__", "build", "dist", "node_modules"}
 SKIP_SUFFIX = {".pyc", ".spec", ".log"}
@@ -134,7 +146,7 @@ def main():
             continue
 
     commit = api("POST", "/repos/%s/%s/git/commits" % (owner, REPO), {
-        "message": "release: v1.0.0 一键提取/导入 AuthKey（Windows + Android）",
+        "message": "release: %s 一键提取/导入 AuthKey（Windows + Android）" % VERSION,
         "tree": new_tree["sha"], "parents": parents})
     try:
         api("POST", "/repos/%s/%s/git/refs" % (owner, REPO),
@@ -145,27 +157,35 @@ def main():
     api("PATCH", "/repos/%s/%s" % (owner, REPO), {"default_branch": "main"})
     print("commit:", commit["sha"])
 
-    body = "\n".join([
-        "## 东放 AuthKey 管家 v1.0.0",
-        "",
-        "《东京放课后召唤师》(Housamo) 账号 AuthKey 一键提取 / 导入工具，支持多账号库与模拟器多开。",
-        "",
-        "### 下载",
-        "- AuthKeyManager-win64.zip — Windows 桌面版（解压即用，内置 adb）",
-        "- HousamoAuthKeyManager-1.0.0.apk — Android 版（Android 11+ 提取/导入需要 root；无 root 请用 Windows 版）",
-        "",
-        "### 用法",
-        "1. 打开 USB 调试或模拟器，设备出现在下拉框后点「提取 AuthKey 到账号库」。",
-        "2. 换号时选中账号点「把选中账号导入设备」，工具会自动停游戏、备份原 key 并回读校验。",
-        "",
-        "详见 README。仅用于账号备份/迁移/多开，风险自负。",
-    ])
-    rel = api("POST", "/repos/%s/%s/releases" % (owner, REPO), {
-        "tag_name": VERSION, "name": "v1.0.0 首发", "body": body,
-        "target_commitish": "main", "draft": False, "prerelease": False})
+    ver = VERSION.lstrip("vV")
+    body_file = os.path.join(ROOT, ".tmp", "release_body.md")
+    if os.path.exists(body_file):
+        body = io.open(body_file, encoding="utf-8").read()
+    else:
+        body = "\n".join([
+            "## 东放 AuthKey 管家 v%s" % ver,
+            "",
+            "_" + DESC + "_",
+            "",
+            "### 下载",
+            "- AuthKeyManager-win64.zip — Windows 桌面版（解压即用，内置 adb）",
+            "- HousamoAuthKeyManager-%s.apk — Android 版" % ver,
+        ])
+    title = os.environ.get("HAK_TITLE") or ("v%s" % ver)
+    try:
+        rel = api("POST", "/repos/%s/%s/releases" % (owner, REPO), {
+            "tag_name": VERSION, "name": title, "body": body,
+            "target_commitish": "main", "draft": False, "prerelease": False})
+    except SystemExit:
+        print("release exists, updating", VERSION)
+        rel = api("GET", "/repos/%s/%s/releases/tags/%s" % (owner, REPO, VERSION))
+        api("PATCH", "/repos/%s/%s/releases/%d" % (owner, REPO, rel["id"]),
+            {"name": title, "body": body})
     print("release:", rel["html_url"])
 
-    for asset in ["dist/AuthKeyManager-win64.zip", "dist/HousamoAuthKeyManager-1.0.0.apk"]:
+    assets = ["dist/AuthKeyManager-win64.zip",
+              "dist/HousamoAuthKeyManager-%s.apk" % ver]
+    for asset in assets:
         p = os.path.join(ROOT, asset.replace("/", os.sep))
         if not os.path.exists(p):
             print("  skip missing", asset)
