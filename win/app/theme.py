@@ -5,7 +5,7 @@ from __future__ import annotations
 
 APP_NAME = "东放 AuthKey 管家"
 APP_SUBTITLE = "Housamo AuthKey"
-APP_VERSION = "1.0.28"
+APP_VERSION = "1.0.29"
 REPO_URL = "https://github.com/fenghuo6183/HousamoAuthKeyManager"
 
 FONT_FAMILY = "Microsoft YaHei UI"

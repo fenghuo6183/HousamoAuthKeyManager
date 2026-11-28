@@ -95,6 +95,11 @@ class Backdrop:
         self._full_key = None
         self._thumb_key = None
         self._thumb = None
+        # Bumped whenever the wallpaper changes so cached card bitmaps know
+        # they are stale without every caller having to remember to say so.
+        self.rev = 0
+        self._card_layers = {}
+        self._layer_order = []
 
     # -- configuration -------------------------------------------------
     def configure(self, path=None, blur=None, alpha=None):
@@ -117,6 +122,7 @@ class Backdrop:
         self._full_key = None
         self._thumb = None
         self._thumb_key = None
+        self.rev += 1
 
     # -- sources -------------------------------------------------------
     def _source(self):
@@ -195,40 +201,52 @@ class Backdrop:
         self._full_key = key
         return self._full
 
-    def card_image(self, size, box, radius=16, fill="#FFFFFF", border="#E2E8F2",
-                   margin=8, shadow_alpha=44):
-        """Render one rounded card, composited on the wallpaper under its box."""
-        base = self.full(*size)
-        x, y, width, height = [int(round(v)) for v in box]
-        width = max(8, width)
-        height = max(8, height)
-        back = crop_clamped(base, (x, y, x + width, y + height), _rgb(self.palette["window"]))
+    def _card_layer(self, width, height, radius, fill, border, margin, shadow_alpha):
+        """Shadow + face + hairline, built once per size and colour set.
+
+        Every scroll notch and page switch repaints each card; the blurred
+        shadow and the supersampled rounded face were most of that paint and
+        neither depends on the wallpaper underneath, so they are cached.
+        """
+        key = (width, height, int(radius), fill, border, int(margin),
+               int(shadow_alpha), self.palette.get("shadow"))
+        layer = self._card_layers.get(key)
+        if layer is not None:
+            return layer
+        layer = self._build_card_layer(width, height, radius, fill, border,
+                                       margin, shadow_alpha)
+        self._card_layers[key] = layer
+        self._layer_order.append(key)
+        while len(self._layer_order) > 10:
+            self._card_layers.pop(self._layer_order.pop(0), None)
+        return layer
+
+    def _build_card_layer(self, width, height, radius, fill, border, margin, shadow_alpha):
         margin = max(0, min(margin, min(width, height) // 3))
         inner_w = max(4, width - margin * 2)
         inner_h = max(4, height - margin * 2)
-        scale = 2
-        layer = Image.new("RGBA", (width * scale, height * scale), (0, 0, 0, 0))
+        layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         if shadow_alpha:
-            mask = Image.new("L", (width * scale, height * scale), 0)
+            # A blur is already soft: supersampling it only cost time.
+            mask = Image.new("L", (width, height), 0)
             ImageDraw.Draw(mask).rounded_rectangle(
-                [margin * scale, (margin + 3) * scale,
-                 (width - margin) * scale - 1, (height - margin + 2) * scale],
-                radius=max(1, int(radius * scale)), fill=int(shadow_alpha * 2.2))
-            mask = mask.filter(ImageFilter.GaussianBlur(4 * scale))
-            shade = Image.new("RGBA", (width * scale, height * scale),
+                [margin, margin + 3, width - margin - 1, height - margin + 2],
+                radius=max(1, int(radius)), fill=int(shadow_alpha * 2.2))
+            mask = mask.filter(ImageFilter.GaussianBlur(4))
+            shade = Image.new("RGBA", (width, height),
                               _rgb(self.palette["shadow"]) + (0,))
             shade.putalpha(mask)
             layer = Image.alpha_composite(layer, shade)
-        card = Image.new("RGBA", (inner_w * scale, inner_h * scale), (0, 0, 0, 0))
-        ImageDraw.Draw(card).rounded_rectangle(
+        scale = 2
+        face = Image.new("RGBA", (inner_w * scale, inner_h * scale), (0, 0, 0, 0))
+        ImageDraw.Draw(face).rounded_rectangle(
             [0, 0, inner_w * scale - 1, inner_h * scale - 1],
             radius=max(1, int(radius * scale)),
             fill=_rgb(fill) + (255,),
-            outline=_rgb(border) + (255,),
-            width=max(1, scale),
+            outline=_rgb(border) + (255,) if border else None,
+            width=max(1, scale) if border else 0,
         )
-        layer.alpha_composite(card, (margin * scale, margin * scale))
-        layer = shrink(layer, (width, height), scale)
+        layer.alpha_composite(shrink(face, (inner_w, inner_h), scale), (margin, margin))
         if border:
             # hairline drawn at 1:1 so it lands on whole pixels instead of
             # being smeared across two of them by the supersample
@@ -238,6 +256,17 @@ class Backdrop:
                 outline=_rgb(border) + (255,),
                 width=1,
             )
+        return layer
+
+    def card_image(self, size, box, radius=16, fill="#FFFFFF", border="#E2E8F2",
+                   margin=8, shadow_alpha=44):
+        """Render one rounded card, composited on the wallpaper under its box."""
+        base = self.full(*size)
+        x, y, width, height = [int(round(v)) for v in box]
+        width = max(8, width)
+        height = max(8, height)
+        back = crop_clamped(base, (x, y, x + width, y + height), _rgb(self.palette["window"]))
+        layer = self._card_layer(width, height, radius, fill, border, margin, shadow_alpha)
         return Image.alpha_composite(back.convert("RGBA"), layer).convert("RGB")
 
     def thumbnail(self, width=150, height=84, radius=10):

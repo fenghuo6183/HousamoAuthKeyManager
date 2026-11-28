@@ -79,6 +79,10 @@ class App:
         self.vaults = {}
         self.update_asset = None
         self.update_release = None
+        # 启动检查到新版本时弹一次更新框；记下已经提示过的版本，同一个
+        # 版本在本次运行里不再重复弹（点「稍后再说」就真的稍后）。
+        self._prompted_update = None
+        self._update_prompt_win = None
         self.vault_kind = "account"
         self._busy = False
         self.save_dir = self.settings.get("save_dir") or ""
@@ -102,6 +106,9 @@ class App:
         self._flash_job = None
         self._scroll = {}
         self._overflow = 0
+        self._scroll_job = None
+        self._settle_job = None
+        self._bg_key = None
 
         root.title(APP_TITLE)
         # Scale the window with the monitor, but never past the desktop.
@@ -768,7 +775,7 @@ class App:
 
         update_card = RoundCard(self)
         ub = update_card.body
-        SectionTitle.build(self, ub, "更新", "检查到新版本会自己下载，重启后生效").pack(fill="x")
+        SectionTitle.build(self, ub, "更新", "启动时自动检查，发现新版本会弹窗提示").pack(fill="x")
         row = tk.Frame(ub, bg=pal["card"])
         row.pack(fill="x", pady=(theme.px(12), theme.px(0)))
         self.update_version_label = label(row, self, "当前版本 v" + theme.APP_VERSION,
@@ -996,7 +1003,35 @@ class App:
         span = max(1, track_h - thumb_h)
         ratio = max(0.0, min(1.0, (event.y - thumb_h / 2.0) / span))
         self._scroll[self.page] = int(round(ratio * self._overflow))
+        self._queue_relayout()
+
+    def _queue_relayout(self):
+        """Coalesce a burst of wheel events into one layout pass.
+
+        A wheel event used to run the whole relayout synchronously, so a
+        fast wheel queued them faster than they could finish, which is what
+        made scrolling look frozen and then jump.
+        """
+        if self._scroll_job:
+            return
+        self._scroll_job = self.root.after(12, self._flush_scroll)
+
+    def _flush_scroll(self):
+        self._scroll_job = None
         self._relayout()
+        if self._settle_job:
+            try:
+                self.root.after_cancel(self._settle_job)
+            except Exception:
+                pass
+        self._settle_job = self.root.after(140, self._settle_scroll)
+
+    def _settle_scroll(self):
+        """Repaint the wallpaper crop under every card once the wheel stops."""
+        self._settle_job = None
+        for card in self.cards:
+            if card.winfo_manager():
+                card.render(force=True)
 
     def refresh_visuals(self):
         width = self.canvas.winfo_width()
@@ -1004,11 +1039,17 @@ class App:
         if width <= 1 or height <= 1:
             return
         if bgfx.PIL_OK:
-            try:
-                self._bg_photo = bgfx.ImageTk.PhotoImage(self.backdrop.full(width, height))
-                self.canvas.itemconfigure(self.bg_item, image=self._bg_photo)
-            except Exception:
-                pass
+            # The wallpaper photo is a full-window Tk image; rebuilding it on
+            # every relayout costs about as much as a card. Only a size,
+            # wallpaper or palette change needs a fresh one.
+            key = (width, height, getattr(self.backdrop, "rev", 0), id(self.pal))
+            if key != self._bg_key:
+                try:
+                    self._bg_photo = bgfx.ImageTk.PhotoImage(self.backdrop.full(width, height))
+                    self.canvas.itemconfigure(self.bg_item, image=self._bg_photo)
+                    self._bg_key = key
+                except Exception:
+                    pass
         else:
             self.canvas.configure(bg=self.pal["window"])
         for card in self.cards:
@@ -1026,7 +1067,7 @@ class App:
         delta = -1 if getattr(event, "delta", 0) > 0 else 1
         offset = self._scroll.get(self.page, 0) + delta * step
         self._scroll[self.page] = max(0, min(offset, self._overflow))
-        self._relayout()
+        self._queue_relayout()
         return "break"
 
     def _on_configure(self, event):
@@ -1285,8 +1326,14 @@ class App:
             self.update_asset = asset
             self.update_status.configure(text="发现新版本 %s" % tag, fg=self.pal["accent"])
             self.btn_install_update.pack(side="right")
+            if manual:
+                # 手动点「检查更新」时哪怕这次启动已经提示过，也再弹一次。
+                self._prompted_update = None
             if updater.is_forced(result):
                 self.show_force_update(tag)
+            elif tag != self._prompted_update:
+                # 启动时的自动检查也要主动弹窗，不能只在设置页留一行小字。
+                self.show_update_prompt(tag)
 
         # Fetch on a worker thread, but deliver on the Tk thread through a
         # poller scheduled here: Tk refuses cross-thread calls when the
@@ -1325,6 +1372,90 @@ class App:
             return "连不上 GitHub（网络不通）"
         return text
 
+    def show_update_prompt(self, tag):
+        """发现新版本（非强制）时弹出来的更新框。
+
+        启动时的自动检查也走这里：用户不用自己去设置页找「检查更新」。
+        点「稍后再说」只关掉本次提示，同一个版本这次运行里不再弹。
+        """
+        pal = self.pal
+        existing = getattr(self, "_update_prompt_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+        self._prompted_update = tag
+        win = tk.Toplevel(self.root)
+        self._update_prompt_win = win
+        win.title("发现新版本")
+        win.configure(bg=pal["window"])
+        win.transient(self.root)
+        win.grab_set()
+        win.protocol("WM_DELETE_WINDOW", self._close_update_prompt)
+        card = tk.Frame(win, bg=pal["card"])
+        card.pack(fill="both", expand=True, padx=theme.px(16), pady=theme.px(16))
+        label(card, self, "发现新版本 %s" % tag, size=12, color="text").pack(
+            anchor="w", padx=theme.px(18), pady=(theme.px(16), theme.px(6)))
+        label(card, self,
+              "当前版本 %s。可以直接在这里下载覆盖安装，装好之后账号库、备份、\n"
+              "导出路径都不动；点「稍后再说」就去掉了，之后也能在「设置 → 更新」里装。"
+              % theme.APP_VERSION,
+              size=9, color="text_muted", wraplength=theme.px(430),
+              justify="left").pack(anchor="w", padx=theme.px(18),
+                                   pady=(theme.px(0), theme.px(14)))
+        row = tk.Frame(card, bg=pal["card"])
+        row.pack(fill="x", padx=theme.px(18), pady=(theme.px(0), theme.px(16)))
+        PillButton(self, row, "立即更新", kind="primary", width=120, height=34,
+                   command=self._update_now).pack(side="left")
+        PillButton(self, row, "去网页下载", kind="ghost", width=112, height=34,
+                   command=self._open_releases_page).pack(
+                       side="left", padx=(theme.px(8), 0))
+        PillButton(self, row, "稍后再说", kind="ghost", width=100, height=34,
+                   command=self._close_update_prompt).pack(side="right")
+        width = theme.px(520)
+        height = win.winfo_reqheight()
+        x = y = 0
+        try:
+            # 盖在程序窗口中间偏上，别跑到屏幕左上角去。
+            rx, ry = self.root.winfo_rootx(), self.root.winfo_rooty()
+            rw, rh = self.root.winfo_width(), self.root.winfo_height()
+            x = rx + max(0, (rw - width) // 2)
+            y = ry + max(0, (rh - height) // 3)
+        except Exception:
+            pass
+        win.geometry("%dx%d+%d+%d" % (width, height, x, y))
+        win.lift()
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+        self.log("更新", "发现新版本 %s，已弹出更新提示" % tag)
+
+    def _close_update_prompt(self):
+        win, self._update_prompt_win = getattr(self, "_update_prompt_win", None), None
+        if win is None:
+            return
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        try:
+            win.destroy()
+        except Exception:
+            pass
+
+    def _update_now(self):
+        """更新框里的「立即更新」：关掉弹窗，直接开始下载（不再二次确认）。"""
+        self._close_update_prompt()
+        self.do_update(confirm=False)
+
+    def _open_releases_page(self):
+        webbrowser.open("https://github.com/fenghuo6183/HousamoAuthKeyManager/releases/latest")
+
     def show_force_update(self, tag):
         """重要/安全修复：不给「稍后」，不更新就用不了。"""
         pal = self.pal
@@ -1357,7 +1488,7 @@ class App:
         win.geometry("%dx%d" % (theme.px(500), win.winfo_reqheight()))
         self.log("更新", "这是强制更新版本 %s，已弹出必须更新的提示" % tag)
 
-    def do_update(self):
+    def do_update(self, confirm=True):
         if not self.update_asset:
             return
         install = updater.install_dir()
@@ -1367,7 +1498,7 @@ class App:
             webbrowser.open("https://github.com/fenghuo6183/HousamoAuthKeyManager/releases/latest")
             return
         tag = (self.update_release or {}).get("tag_name") or ""
-        if not messagebox.askyesno(
+        if confirm and not messagebox.askyesno(
                 APP_TITLE,
                 "将下载 %s 并在关闭本程序后替换安装目录，然后自动重启。\n继续吗？" % tag):
             return

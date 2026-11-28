@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.28";
+    static final String CURRENT_VER = "1.0.29";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -109,7 +109,7 @@ public class MainActivity extends Activity {
     private Button btnLock, btnShot, btnNight;
     private TextView rowRootVal, rowGameVal, rowShzkVal, rowPermVal, rowCount, rowSaved, rowSelVal;
     private TextView rowStoreVal, rowResVal, rowOsVal, rowVerVal;
-    private TextView rowSvcVal, rowModeVal, rowBatteryVal, rowNotifVal, rowGameVerVal, rowExportVal, rowUpdateVal;
+    private TextView rowSvcVal, rowModeVal, rowGameVerVal, rowExportVal, rowUpdateVal;
     private TextView rowBakVal;
     private static final int REQ_TREE = 0x71;
     private static final int REQ_TREE_COPY = 0x72;
@@ -260,6 +260,9 @@ public class MainActivity extends Activity {
         refreshList();
         maybeShowDisclaimer();
         syncFromExportFolderAsync();
+        // 启动就自动检查更新（内部自己开线程），不再挂在 root/Shizuku 检查
+        // 后面——那一段一旦抛异常，更新检查就被跳过了。
+        checkUpdate(false);
 
         int startPage = getPreferences(MODE_PRIVATE).getInt("page", 0);
         if (getIntent() != null && getIntent().hasExtra("page")) {
@@ -295,7 +298,6 @@ public class MainActivity extends Activity {
                 } else {
                     log("[Shizuku] 未连接（未安装 Shizuku 或服务未启动）。");
                 }
-                checkUpdate(false);
                 String found = findGamePackages();
                 log("[游戏] 检测到的相关包名：" + (found.length() == 0 ? "无（确认游戏装在同一台手机上）" : found));
                 log("[游戏] 数据目录 " + EXT_DIR + "：" + (new File(EXT_DIR).exists() ? "存在" : "App 无权直接访问（Android 11+ 正常，走 Shizuku/root 通道）"));
@@ -769,8 +771,6 @@ public class MainActivity extends Activity {
         rowShzkVal = value(0, "未连接");
         rowRootVal = value(0, "检测中...");
         rowStoreVal = value(0, "检测中...");
-        rowBatteryVal = value(0, "检测中...");
-        rowNotifVal = value(0, "检测中...");
         perm.addView(rowWith(rowShzkVal, "Shizuku 权限", new View.OnClickListener() {
             public void onClick(View v) { askShizuku(); }
         }));
@@ -779,14 +779,6 @@ public class MainActivity extends Activity {
         perm.addView(divider());
         perm.addView(rowWith(rowStoreVal, "外部存储权限", new View.OnClickListener() {
             public void onClick(View v) { askStorage(); }
-        }));
-        perm.addView(divider());
-        perm.addView(rowWith(rowBatteryVal, "电池优化白名单", new View.OnClickListener() {
-            public void onClick(View v) { askBattery(); }
-        }));
-        perm.addView(divider());
-        perm.addView(rowWith(rowNotifVal, "通知权限", new View.OnClickListener() {
-            public void onClick(View v) { askNotif(); }
         }));
         p.addView(perm, cardParams(0));
 
@@ -1353,50 +1345,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean batteryIgnored() {
-        try {
-            android.os.PowerManager pm = (android.os.PowerManager) getSystemService(POWER_SERVICE);
-            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private boolean notifGranted() {
-        try {
-            android.app.NotificationManager nm = (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            return nm != null && nm.areNotificationsEnabled();
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    private void askBattery() {
-        try {
-            Intent i = new Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
-            i.setData(android.net.Uri.parse("package:" + getPackageName()));
-            startActivity(i);
-        } catch (Throwable t) {
-            try {
-                startActivity(new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS));
-            } catch (Throwable ignored) {
-            }
-        }
-    }
-
-    private void askNotif() {
-        try {
-            if (android.os.Build.VERSION.SDK_INT >= 33) {
-                requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 0x7B);
-            } else {
-                Intent i = new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS);
-                i.putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, getPackageName());
-                startActivity(i);
-            }
-        } catch (Throwable ignored) {
-        }
-    }
-
     private boolean storageGranted() {
         try {
             if (android.os.Build.VERSION.SDK_INT >= 30) {
@@ -1613,16 +1561,6 @@ public class MainActivity extends Activity {
                 rowModeVal.setText(hasRoot ? "Root 直接读写" : (granted ? "免 root（Shizuku）" : "未授权，无法读写游戏目录"));
                 rowModeVal.setTextColor(granted || hasRoot ? okColor : noColor);
             }
-        }
-        if (rowBatteryVal != null) {
-            boolean bi = batteryIgnored();
-            rowBatteryVal.setText(bi ? "已加白名单" : "点此去设置");
-            rowBatteryVal.setTextColor(bi ? okColor : grayColor);
-        }
-        if (rowNotifVal != null) {
-            boolean nf = notifGranted();
-            rowNotifVal.setText(nf ? "已开启" : "点此开启");
-            rowNotifVal.setTextColor(nf ? okColor : grayColor);
         }
         if (rowStoreVal != null) {
             boolean sg = storageGranted();

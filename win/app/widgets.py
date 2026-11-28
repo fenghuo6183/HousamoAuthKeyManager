@@ -104,6 +104,7 @@ class RoundCard(tk.Canvas):
         self._photo = None
         self._img_id = None
         self._box = (0, 0, 1, 1)
+        self._key = None
         self.body = tk.Frame(self, bg=app.pal[fill], bd=0, highlightthickness=0)
         inset = self.margin + self.pad
         self._win = self.create_window(inset, inset, window=self.body, anchor="nw")
@@ -122,11 +123,27 @@ class RoundCard(tk.Canvas):
     # geometry is always driven by the app layout, never by <Configure>,
     # so the wallpaper crop under the card is exact.
     def layout(self, x, y, width, height):
-        self._box = (x, y, width, height)
+        box = (x, y, width, height)
+        if box == self._box and self._photo is not None:
+            # Unchanged geometry (a repeated relayout) only needs the window
+            # moved, not the card repainted.
+            self.place(x=x, y=y, width=width, height=height)
+            return
+        if (self._photo is not None and self._key is not None
+                and box[0] == self._box[0] and box[2:] == self._box[2:]
+                and abs(box[1] - self._box[1]) <= theme_mod.px(32)):
+            # One scroll notch: move the painted card. Only the 8px shadow
+            # ring shows the wallpaper, and the app repaints it as soon as
+            # the wheel settles, so repainting every card here is wasted
+            # work that made the wheel feel stuck.
+            self._box = box
+            self.place(x=x, y=y, width=width, height=height)
+            return
+        self._box = box
         self.place(x=x, y=y, width=width, height=height)
         self.render()
 
-    def render(self):
+    def render(self, force=False):
         x, y, width, height = self._box
         if width < 20 or height < 20:
             return
@@ -136,12 +153,19 @@ class RoundCard(tk.Canvas):
         if not bgfx.PIL_OK or ImageTk is None:
             self.configure(bg=self.app.pal[self.fill])
             return
+        key = (self._box, self.app.canvas.winfo_width(),
+               self.app.canvas.winfo_height(),
+               getattr(self.app.backdrop, "rev", 0), id(self.app.pal),
+               self.fill, self.border, self.shadow, self.radius, self.margin)
+        if not force and key == self._key and self._photo is not None:
+            return
         try:
             img = self.app.backdrop.card_image(
                 (self.app.canvas.winfo_width(), self.app.canvas.winfo_height()),
                 self._box, self.radius, self.app.pal[self.fill],
                 self.app.pal[self.border], self.margin, self.shadow)
             self._photo = ImageTk.PhotoImage(img)
+            self._key = key
             if self._img_id is None:
                 self._img_id = self.create_image(0, 0, anchor="nw", image=self._photo,
                                                  tags=("cardbg",))
