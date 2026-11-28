@@ -12,7 +12,6 @@ import base64
 import hashlib
 import hmac
 import os
-import tkinter as tk
 
 from . import theme
 

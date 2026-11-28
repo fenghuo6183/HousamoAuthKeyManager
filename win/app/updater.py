@@ -275,10 +275,17 @@ def apply_update(zip_path, install, parent_pid=0, log=print):
                     shutil.copyfileobj(src, dst)
                 os.replace(temp, target)
                 log("已更新 %s" % rel)
-        exe = os.path.join(install, "AuthKeyManager.exe")
+        names = [os.path.basename(sys.executable)] if getattr(sys, "frozen", False) else []
+        names += ["AuthKeyManager.exe", "AuthKeyManagerQt.exe"]
+        exe = ""
+        for name in names:
+            candidate = os.path.join(install, name)
+            if os.path.isfile(candidate):
+                exe = candidate
+                break
         write_state(stage="done", finished_at=time.strftime("%Y-%m-%d %H:%M:%S"))
         log("更新完成，正在启动新版本…")
-        if os.path.isfile(exe):
+        if exe:
             try:
                 subprocess.Popen([exe], cwd=install)
             except Exception as exc:

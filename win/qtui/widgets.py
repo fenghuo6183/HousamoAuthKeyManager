@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRectF, QSize, Qt, Signal, Property
+import os
+
+from PySide6.QtCore import (QEasingCurve, QPoint, QPointF, QPropertyAnimation, QRect, QRectF,
+                            QSize, Qt, Signal, Property)
 from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPen
-from PySide6.QtWidgets import QAbstractButton, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QAbstractButton, QComboBox, QHBoxLayout, QLabel,
+                               QSizePolicy, QVBoxLayout, QWidget)
 
 from . import base
 
@@ -30,20 +34,12 @@ class GlassCard(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        rect = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        rect = QRectF(self.rect()).adjusted(1.0, 1.0, -1.0, -1.0)
         if self.shadow:
             base.draw_shadow(p, rect, self.radius, self.pal["shadow"],
                              spread=16, strength=0.13 + 0.10 * (1.0 - self.alpha))
-        path = base.rounded(rect, self.radius)
-        top = base.qc(self.pal["card"], 255 * self.alpha)
-        bottom = base.qc(base.mix(QColor(self.pal["card"]), QColor(self.pal["card_soft"]), 0.55), 255 * self.alpha)
-        p.setPen(Qt.NoPen)
-        p.setBrush(base.gradient(top, bottom, rect))
-        p.drawPath(path)
-        border_alpha = int(255 * self.border_strength * min(1.0, self.alpha + 0.25))
-        p.setPen(QPen(base.qc(self.pal["border"], border_alpha), 1))
-        p.setBrush(Qt.NoBrush)
-        p.drawPath(path)
+        base.paint_glass(p, self, self.pal, rect, self.radius, self.alpha,
+                         base_key="card", border_strength=self.border_strength)
 
 
 class PillButton(QAbstractButton):
@@ -295,10 +291,34 @@ class Segmented(QWidget):
             p.drawText(cell, Qt.AlignCenter, text)
 
 
+class ChevronCombo(QComboBox):
+    """Combo box that draws its own chevron: Qt hides the native arrow once the
+    field itself is styled, which makes a dropdown look like a plain text box."""
+
+    def __init__(self, pal, parent=None):
+        super().__init__(parent)
+        self.arrow_color = QColor(pal["text_muted"])
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        x = self.width() - 14.0
+        y = self.height() / 2.0
+        pen = QPen(self.arrow_color, 1.6)
+        pen.setCapStyle(Qt.RoundCap)
+        pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen)
+        p.drawLine(QPointF(x - 4, y - 2), QPointF(x, y + 2))
+        p.drawLine(QPointF(x, y + 2), QPointF(x + 4, y - 2))
+        p.end()
+
+
 class Field(QWidget):
     """Label + control row used inside cards."""
 
-    def __init__(self, pal, label, control, hint="", parent=None, label_width=150, expand=False):
+    def __init__(self, pal, label, control, hint="", parent=None, label_width=150,
+                 expand=False, top=False):
         super().__init__(parent)
         self.pal = pal
         row = QHBoxLayout(self)
@@ -316,12 +336,15 @@ class Field(QWidget):
             small.setFont(base.font(9))
             small.setWordWrap(True)
             small.setFixedWidth(label_width)
-            small.setStyleSheet("background: transparent; color: %s;" % pal["text_faint"])
+            small.setStyleSheet("background: transparent; color: %s;" % pal["text_muted"])
             box.addWidget(small)
         holder = QWidget()
         holder.setLayout(box)
         holder.setFixedWidth(label_width)
-        row.addWidget(holder)
+        if top:
+            row.addWidget(holder, 0, Qt.AlignTop)
+        else:
+            row.addWidget(holder)
         if expand:
             row.addWidget(control, 1)
         else:

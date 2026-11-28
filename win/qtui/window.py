@@ -84,6 +84,11 @@ class Backdrop(QWidget):
         p.end()
         self._pm = pm
 
+    def pixmap(self):
+        """The finished wallpaper (already blurred + veiled) for glass compositing."""
+        self._ensure()
+        return self._pm
+
     def paintEvent(self, event):
         self._ensure()
         if self._pm is not None:
@@ -95,9 +100,10 @@ class Rail(QWidget):
 
     page_requested = Signal(str)
 
-    def __init__(self, pal, parent=None):
+    def __init__(self, pal, parent=None, alpha=0.92):
         super().__init__(parent)
         self.pal = pal
+        self.alpha = alpha
         self.setFixedWidth(258)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 30, 16, 18)
@@ -134,36 +140,19 @@ class Rail(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, False)
-        p.fillRect(self.rect(), base.qc(self.pal["rail"], 200))
+        base.paint_glass(p, self, self.pal, QRectF(self.rect()), 0, self.alpha,
+                         base_key="rail", soft_key=None)
         p.setPen(base.qc(self.pal["border"], 120))
         p.drawLine(self.width() - 1, 0, self.width() - 1, self.height())
 
 
-class Scrim(QWidget):
-    """Soft fade behind the page title so text stays readable on any wallpaper."""
 
-    def __init__(self, pal, parent=None, height=132):
-        super().__init__(parent)
-        self.pal = pal
-        self.setFixedHeight(height)
-        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
-
-    def paintEvent(self, event):
-        from PySide6.QtGui import QLinearGradient
-        p = QPainter(self)
-        top = base.qc(self.pal["window"], 225)
-        bottom = base.qc(self.pal["window"], 0)
-        grad = QLinearGradient(0, 0, 0, self.height())
-        grad.setColorAt(0.0, top)
-        grad.setColorAt(0.62, base.qc(self.pal["window"], 150))
-        grad.setColorAt(1.0, bottom)
-        p.fillRect(self.rect(), grad)
 
 
 class Page(QScrollArea):
     """Scrollable page: a column of glass cards inside a fixed content width."""
 
-    def __init__(self, pal, title, subtitle="", parent=None):
+    def __init__(self, pal, title, subtitle="", parent=None, head_in_card=False):
         super().__init__(parent)
         self.pal = pal
         self.setWidgetResizable(True)
@@ -178,7 +167,10 @@ class Page(QScrollArea):
         self.column.setContentsMargins(34, 26, 34, 26)
         self.column.setSpacing(16)
 
-        head = QVBoxLayout()
+        head_widget = QWidget()
+        head_widget.setStyleSheet("background: transparent;")
+        head = QVBoxLayout(head_widget)
+        head.setContentsMargins(0, 0, 0, 0)
         head.setSpacing(4)
         self.title = QLabel(title)
         self.title.setFont(base.font(19, bold=True))
@@ -189,22 +181,11 @@ class Page(QScrollArea):
             self.subtitle.setFont(base.font(10))
             self.subtitle.setStyleSheet("background: transparent; color: %s;" % pal["text_muted"])
             head.addWidget(self.subtitle)
-        self.column.addLayout(head)
-        self.column.addSpacing(6)
+        self.head = head_widget
+        if not head_in_card:
+            self.column.addWidget(head_widget)
+            self.column.addSpacing(6)
         self.setWidget(body)
-
-        # The veil sits behind the page content (title/cards), so it only dims
-        # the wallpaper, never the text drawn on top of it.
-        self.scrim = Scrim(pal, body)
-        self.scrim.setGeometry(0, 0, body.width(), 132)
-        self.scrim.lower()
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        scrim = getattr(self, "scrim", None)
-        if scrim is not None and self.widget() is not None:
-            scrim.setGeometry(0, 0, self.widget().width(), 132)
-            scrim.lower()
 
     def add(self, widget, stretch=0):
         self.column.addWidget(widget, stretch)
@@ -233,7 +214,8 @@ class Shell(QWidget):
                                 veil=110, pal=self.pal)
         self.backdrop.lower()
 
-        self.rail = Rail(self.pal, self)
+        self.rail = Rail(self.pal, self,
+                         alpha=base.card_alpha(self.settings.get("glass")))
         self.pages = QStackedWidget(self)
 
         row = QHBoxLayout(self)
@@ -242,7 +224,7 @@ class Shell(QWidget):
         row.addWidget(self.rail)
         row.addWidget(self.pages, 1)
 
-        self._cards = []
+        self._cards = [self.rail]
         self.rail.page_requested.connect(self.show_page)
         self.page = "tasks"
 
@@ -305,6 +287,8 @@ class Shell(QWidget):
                                 blur=self.settings.get("bg_blur"),
                                 veil=110, pal=self.pal)
         self.backdrop.update()
+        for card in self._cards:
+            card.update()
 
     def register_card(self, card):
         self._cards.append(card)

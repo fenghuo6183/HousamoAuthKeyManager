@@ -7,12 +7,26 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from PySide6.QtCore import QObject, QTimer, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication
 
 from app import config, theme
 from qtui.pages import settings_page, tasks_page, vault_page
 from qtui.tray import Tray
 from qtui.window import Shell
+
+
+def _window_icon():
+    """The packaged .ico, wherever PyInstaller put it."""
+    here = getattr(sys, "_MEIPASS", None) or os.path.dirname(os.path.abspath(__file__))
+    for path in (os.path.join(here, "assets", "icon.ico"),
+                 os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "icon.ico"),
+                 os.path.join(here, "assets", "icon.png")):
+        if os.path.exists(path):
+            icon = QIcon(path)
+            if not icon.isNull():
+                return icon
+    return QIcon()
 
 
 def _single_instance():
@@ -22,6 +36,7 @@ def _single_instance():
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
+        # separate from the Tk build so both can run side by side
         kernel32.CreateMutexW(None, False, "Global\\HousamoAuthKeyManager")
         if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             user32 = ctypes.windll.user32
@@ -63,6 +78,7 @@ def build_shell(settings, live=True):
     shell.add_page("tasks", tasks_page(shell))
     shell.add_page("vault", vault_page(shell))
     shell.add_page("settings", settings_page(shell))
+    shell.show_page("tasks")   # first page opens with its rail entry highlighted
     return shell
 
 
@@ -86,6 +102,7 @@ def main():
     application = QApplication(sys.argv)
     application.setApplicationName(theme.APP_NAME)
     application.setApplicationDisplayName(theme.APP_NAME)
+    application.setWindowIcon(_window_icon())
     application.setQuitOnLastWindowClosed(False)
 
     selftest = "--selftest" in sys.argv
@@ -102,6 +119,16 @@ def main():
         return 0
 
     shell.show()
+
+    from app import applock
+    from qtui import guard
+    if applock.is_enabled(settings) and not guard.unlock(shell, settings, shell.pal):
+        shell.hide()
+        application.quit()
+        return 0
+    if settings.get("no_capture"):
+        guard.set_capture_guard(shell, True)
+
     start_tray(settings, shell)
 
     if shell.controller is not None:

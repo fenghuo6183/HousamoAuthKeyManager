@@ -16,12 +16,13 @@ from . import base
 
 def app_icon(pal=None):
     """Use the packaged .ico when present, otherwise paint a rounded monogram."""
-    icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "assets", "app.ico")
-    if os.path.exists(icon_path):
-        icon = QIcon(icon_path)
-        if not icon.isNull():
-            return icon
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    for name in ("icon.ico", "app.ico"):
+        icon_path = os.path.join(here, "assets", name)
+        if os.path.exists(icon_path):
+            icon = QIcon(icon_path)
+            if not icon.isNull():
+                return icon
     pal = pal or theme.palette("light")
     pixmap = QPixmap(64, 64)
     pixmap.fill(Qt.transparent)

@@ -102,7 +102,7 @@ public class MainActivity extends Activity {
     }
     static final String VAULT = "vault";
     static final String VAULT_KEY = "accounts";
-    static final String CURRENT_VER = "1.0.29";
+    static final String CURRENT_VER = "1.2";
     static final String UP_API = "https://api.github.com/repos/fenghuo6183/HousamoAuthKeyManager/releases/latest";
     private static File pendingApk = null;
     private String promptedUpdate = "";
@@ -443,7 +443,8 @@ public class MainActivity extends Activity {
         rootPanel.addView(nav, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         applyWallpaper();
         applyGlass();
-        showPage(0);
+        // 恢复上次停留的页面；这里不写回偏好，交给 onCreate 决定最终页（含通知指定的 page）。
+        showPage(getPreferences(MODE_PRIVATE).getInt("page", 0), false);
         return shellBox;
     }
 
@@ -485,11 +486,21 @@ public class MainActivity extends Activity {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
     }
 
+    /** 切到第 idx 页，并记住它，下次重建界面（换深色、换壁纸）还停在这页。 */
     private void showPage(int idx) {
+        showPage(idx, true);
+    }
+
+    /**
+     * remember=false：只切换显示，不写「上次在哪页」。
+     * buildUi() 恢复上次页面时必须用它——否则重建界面时这里会把 page 写成 0，
+     * onCreate 之后读到的永远是首页，切换外观就会跳回首页。
+     */
+    private void showPage(int idx, boolean remember) {
         if (pageHome == null) return;
         if (idx < 0 || idx > 3) idx = 0;
         curPage = idx;
-        getPreferences(MODE_PRIVATE).edit().putInt("page", idx).apply();
+        if (remember) getPreferences(MODE_PRIVATE).edit().putInt("page", idx).apply();
         pageHome.setVisibility(idx == 0 ? View.VISIBLE : View.GONE);
         pageTask.setVisibility(idx == 1 ? View.VISIBLE : View.GONE);
         pageAcc.setVisibility(idx == 2 ? View.VISIBLE : View.GONE);
@@ -505,7 +516,7 @@ public class MainActivity extends Activity {
                 tabs[i].setCompoundDrawableTintList(android.content.res.ColorStateList.valueOf(idx == i ? on : off));
             }
         }
-        if (idx == 2) {
+        if (idx == 2 && remember) {
             curFpLoaded = false;
             refreshCurrentFp();
         }

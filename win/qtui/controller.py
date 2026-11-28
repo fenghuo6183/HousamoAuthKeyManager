@@ -7,11 +7,15 @@ queued signals, so widgets are only ever touched on the GUI thread.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 import threading
+import time
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 
-from app import config
+from app import config, reconcile, updater
 
 from .service import Service
 
@@ -23,6 +27,9 @@ class Controller(QObject):
     busy_changed = Signal(bool)
     vault_changed = Signal(object)     # list[dict]
     game_changed = Signal(object)      # game.Game
+    update_checked = Signal(str, bool)  # tag, newer?
+    current_changed = Signal(str)      # digest of the key the game is using
+    reconcile_ready = Signal(object)   # payload dict, or None when all clear
     _job_done = Signal(object)         # (done, result, error)
 
     def __init__(self, settings=None, parent=None):
@@ -30,7 +37,15 @@ class Controller(QObject):
         self.settings = settings if settings is not None else config.Settings()
         self.service = None
         self.busy = False
+        self.latest_tag = ""
+        self.latest_asset = None
+        self.current_digest = ""
+        self._reconcile_serial = ""
         self._job_done.connect(self._on_job_done, Qt.QueuedConnection)
+        self._backup_timer = QTimer(self)
+        self._backup_timer.setInterval(60000)
+        self._backup_timer.timeout.connect(self._backup_tick)
+        self._backup_timer.start()
 
     # -- plumbing ------------------------------------------------------
     def log(self, tag, message):
@@ -94,6 +109,10 @@ class Controller(QObject):
         self.game_changed.emit(service.game)
         self.vault_changed.emit(service.vault.entries)
         self.refresh_devices()
+        preferred = self.settings.get("preferred_serial") or ""
+        if self.settings.get("auto_connect") and preferred and service.adb is not None:
+            self.log("连接", "启动时自动连接记住的设备 %s" % preferred)
+            self.connect(preferred)
 
     # -- devices -------------------------------------------------------
     def refresh_devices(self, quiet=False):
@@ -108,6 +127,16 @@ class Controller(QObject):
                     devices = self.service.refresh_devices()
                 except Exception:
                     return
+                if self.settings.get("auto_reconnect") and not any(d.online for d in devices):
+                    preferred = self.settings.get("preferred_serial") or ""
+                    now = time.time()
+                    if preferred and now - getattr(self, "_last_reconnect", 0.0) > 20.0:
+                        self._last_reconnect = now
+                        try:
+                            self.service._need_adb().connect(preferred, timeout=3)
+                            devices = self.service.refresh_devices()
+                        except Exception:
+                            pass
                 self._job_done.emit((self._devices_done, devices, None))
 
             threading.Thread(target=poll, daemon=True).start()
@@ -137,11 +166,15 @@ class Controller(QObject):
             dev = next((d for d in online if d.serial == self.service.serial), online[0])
             self.service.serial = dev.serial
             self.state_changed.emit("ok", "已连接 %s" % dev.short_label, dev.serial)
+            if getattr(self, "_reconcile_serial", "") != dev.serial:
+                self._reconcile_serial = dev.serial
+                QTimer.singleShot(1200, lambda: self.check_reconcile())
         elif devices:
             self.state_changed.emit("warn", "%d 台设备离线" % len(devices),
                                     "看看模拟器有没有开、端口对不对")
         else:
             self.state_changed.emit("warn", "未发现设备", "打开模拟器，或点「扫描端口」")
+            self.reconcile_ready.emit(None)
 
     def connect(self, serial):
         if self.service is None:
@@ -155,6 +188,35 @@ class Controller(QObject):
             self.refresh_devices()
 
         self._bg(lambda: self.service.connect(serial), done)
+
+    def test_connection(self, serial):
+        """Probe one address without adopting it as the active device."""
+        if self.service is None:
+            self.log("提示", "adb 还在准备，稍等一下")
+            return
+        serial = (serial or "").strip()
+        if not serial:
+            self.log("提示", "先填一个地址再测试")
+            return
+        self.state_changed.emit("muted", "正在测试连接…", serial)
+
+        def work():
+            adb = self.service._need_adb()
+            ok, text = adb.connect(serial, timeout=6)
+            return ok, (text or "").strip()
+
+        def done(payload):
+            ok, text = payload
+            if ok:
+                self.log("连接", "连接测试成功：%s" % serial)
+                self.state_changed.emit("ok", "连接测试成功", serial)
+                self.refresh_devices()
+            else:
+                reason = text or "连不上 %s" % serial
+                self.log("失败", "连接测试失败：%s" % reason)
+                self.state_changed.emit("err", "连接测试失败", reason)
+
+        self._bg(work, done)
 
     def scan_ports(self):
         if self.service is None:
@@ -173,7 +235,7 @@ class Controller(QObject):
         self._bg(self.service.scan_ports, done)
 
     # -- actions -------------------------------------------------------
-    def backup(self):
+    def backup(self, auto=False, name=None):
         if self.service is None:
             return
         self.state_changed.emit("muted", "正在读取 AuthKey…", "")
@@ -182,13 +244,30 @@ class Controller(QObject):
             entry, created, serial = payload
             self.vault_changed.emit(self.service.vault.entries)
             if created:
-                self.log("完成", "已备份：%s" % entry.get("name"))
+                self.log("完成", "已%s：%s" % ("自动备份" if auto else "备份", entry.get("name")))
                 self.state_changed.emit("ok", "备份完成", entry.get("name"))
             else:
                 self.log("备份", "这个 key 已经在账号库里了")
                 self.state_changed.emit("ok", "已连接", serial)
+            if created:
+                self.check_reconcile(force=True)
 
-        self._bg(self.service.backup, done)
+        self._bg(lambda: self.service.backup(name=name), done)
+
+    def _backup_tick(self):
+        if not self.settings.get("auto_backup") or self.service is None or self.busy:
+            return
+        try:
+            hours = max(1, min(48, int(self.settings.get("auto_backup_hours") or 6)))
+            last = float(self.settings.get("last_backup_at") or 0)
+        except (TypeError, ValueError):
+            hours, last = 6, 0.0
+        if time.time() - last < hours * 3600:
+            return
+        if not any(dev.online for dev in (self.service.devices or [])):
+            return
+        self.log("备份", "自动备份时间到了（每 %d 小时一次）" % hours)
+        self.backup(auto=True)
 
     def launch_game(self):
         if self.service is None:
@@ -276,21 +355,190 @@ class Controller(QObject):
             if not release:
                 return None
             tag = release.get("tag_name") or release.get("name") or ""
-            return tag, updater.is_newer(tag, theme_mod.APP_VERSION)
+            asset = updater.pick_asset(release)
+            return tag, updater.is_newer(tag, theme_mod.APP_VERSION), asset
 
         def done(payload):
             if payload is None:
                 self.log("更新", "没查到这个版本的更新信息")
                 return
-            tag, newer = payload
+            tag, newer, asset = payload
+            self.latest_tag = tag
+            self.latest_asset = asset
+            self.update_checked.emit(tag, bool(newer))
             if newer:
                 self.log("更新", "发现新版本 %s" % tag)
-                self.state_changed.emit("ok", "有新版本 %s" % tag, "去 GitHub Release 下载")
+                self.state_changed.emit("ok", "有新版本 %s" % tag, "设置里可以一键更新")
             else:
                 self.log("更新", "已经是最新版本（%s）" % tag)
 
         self.state_changed.emit("muted", "正在检查更新…", "")
         self._bg(work, done)
+
+    # -- reconcile / account parity ------------------------------------
+    def check_reconcile(self, force=False):
+        """Read the key the game is running and tell the UI if it is unknown."""
+        if self.service is None or self.busy:
+            return
+        if not any(dev.online for dev in (self.service.devices or [])):
+            return
+        self.state_changed.emit("muted", "正在核对游戏里的 key…", "")
+
+        def work():
+            key, source, serial = self.service.current_key(quiet=True)
+            digest = reconcile.digest_of(key)
+            known = reconcile.is_known(self.service.vault, digest)
+            ignored = set(self.settings.get("reconcile_ignored") or [])
+            return {"key": key, "source": source, "serial": serial,
+                    "digest": digest, "known": known, "ignored": digest in ignored}
+
+        def done(payload):
+            self.current_digest = payload.get("digest") or ""
+            self.current_changed.emit(self.current_digest)
+            if payload.get("known") or payload.get("ignored"):
+                self.reconcile_ready.emit(None)
+                self.state_changed.emit("ok", "游戏里的 key 已在账号库里", "")
+            else:
+                self.log("核对", "游戏里现在用的 key 不在账号库里")
+                self.reconcile_ready.emit(payload)
+
+        self._bg(work, done)
+
+    def save_reconcile(self, payload, name):
+        if self.service is None or not payload:
+            return
+        self.state_changed.emit("muted", "正在保存快照…", "")
+
+        def done(result):
+            entry, created = result
+            self.vault_changed.emit(self.service.vault.entries)
+            self.reconcile_ready.emit(None)
+            self.log("完成", "已存进账号库：%s" % entry.get("name"))
+            self.state_changed.emit("ok", "已保存游戏内快照", entry.get("name"))
+
+        self._bg(lambda: self.service.save_key(payload["key"], name=name,
+                                               source=payload.get("source", ""),
+                                               device=payload.get("serial", "")), done)
+
+    def dismiss_reconcile(self, digest):
+        if not digest:
+            return
+        ignored = list(self.settings.get("reconcile_ignored") or [])
+        if digest not in ignored:
+            ignored.append(digest)
+            self.settings.set("reconcile_ignored", ignored[-50:])
+            self.settings.save()
+        self.reconcile_ready.emit(None)
+
+    def set_note(self, entry_id, note):
+        if self.service is None:
+            return
+
+        def done(entry):
+            self.vault_changed.emit(self.service.vault.entries)
+            if entry:
+                self.log("账号", "备注已保存：%s" % (entry.get("note") or "（清空）"))
+
+        self._bg(lambda: self.service.set_note(entry_id, note), done)
+
+    def restore_entry(self, entry_id):
+        if self.service is None:
+            return
+        self.state_changed.emit("muted", "正在写回游戏…", "")
+
+        def done(payload):
+            entry, target = payload
+            self.vault_changed.emit(self.service.vault.entries)
+            self.log("完成", "已把「%s」写进游戏" % entry.get("name"))
+            self.state_changed.emit("ok", "还原完成", entry.get("name"))
+
+        self._bg(lambda: self.service.restore_entry(entry_id), done)
+
+    def bulk_export(self, path, kind="account"):
+        if self.service is None:
+            return
+        self.state_changed.emit("muted", "正在打包导出…", "")
+
+        def done(count):
+            self.log("完成", "已打包导出 %d 条到 %s" % (count, path))
+            self.state_changed.emit("ok", "打包导出完成", "%d 条" % count)
+
+        self._bg(lambda: self.service.bulk_export(path, kind), done)
+
+    def import_clipboard(self):
+        if self.service is None:
+            return
+        from PySide6.QtWidgets import QApplication
+        text = QApplication.clipboard().text()
+        if not text.strip():
+            self.log("提示", "剪贴板是空的")
+            return
+
+        def done(payload):
+            entry, created = payload
+            self.vault_changed.emit(self.service.vault.entries)
+            self.log("完成" if created else "账号",
+                     ("已从剪贴板导入：%s" % entry.get("name")) if created
+                     else "这个 key 已经在账号库里了")
+
+        self._bg(lambda: self.service.import_clipboard(text), done)
+
+    # -- update --------------------------------------------------------
+    def install_update(self):
+        if not self.latest_asset:
+            self.log("更新", "先点「立即检查」拿到新版下载地址")
+            return
+        install = updater.install_dir()
+        if not updater.dir_writable(install):
+            self.log("错误", "程序目录不可写（可能装在 Program Files），请手动下载覆盖")
+            self.state_changed.emit("err", "无法自动更新", "程序目录不可写")
+            return
+        tag = self.latest_tag
+        asset = dict(self.latest_asset)
+        self.state_changed.emit("muted", "正在下载更新…", tag)
+
+        def work():
+            zip_path = updater.download(asset.get("url", ""), asset.get("digest", ""),
+                                        lambda m: self.log("更新", m))
+            stage = updater.stage_copy(install, log=lambda m: self.log("更新", m))
+            name = os.path.basename(sys.executable) if getattr(sys, "frozen", False) \
+                else "AuthKeyManager.exe"
+            exe = os.path.join(stage, name)
+            if not os.path.isfile(exe):
+                raise RuntimeError("临时目录里没有可执行文件：%s" % exe)
+            updater.write_state(stage="applying", target_version=tag,
+                                zip=zip_path, install=install)
+            subprocess.Popen([exe, "--apply-update", zip_path, install, str(os.getpid())],
+                             cwd=stage,
+                             creationflags=getattr(subprocess, "DETACHED_PROCESS", 0))
+            return zip_path
+
+        def done(zip_path):
+            self.log("更新", "更新程序已启动，本程序即将退出并重启")
+            self.state_changed.emit("ok", "正在安装更新", tag)
+            parent = self.parent()
+            if parent is not None and hasattr(parent, "quit_app"):
+                QTimer.singleShot(500, parent.quit_app)
+
+        self._bg(work, done)
+
+    # -- bulk / maintenance -------------------------------------------
+    def import_folder(self, path):
+        def done(payload):
+            added, skipped = payload
+            self.vault_changed.emit(self.service.vault.entries)
+            self.log("完成", "批量导入：新增 %d 个，跳过 %d 个重复" % (added, skipped))
+            self.state_changed.emit("ok", "导入完成", "新增 %d 个" % added if added else "没有新账号")
+
+        self._bg(lambda: self.service.import_folder(path), done)
+
+    def clear_vault(self):
+        count = self.service.clear_all()
+        self.vault_changed.emit(self.service.vault.entries)
+        self.current_digest = ""
+        self.current_changed.emit("")
+        self.log("账号", "已清空账号库（%d 条）" % count)
+        self.state_changed.emit("ok", "账号库已清空", "")
 
     def switch_game(self, game_id):
         if self.service is None:
